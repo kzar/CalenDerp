@@ -5,6 +5,7 @@ from google.appengine.ext.webapp.util import run_wsgi_app
 application = webapp.WSGIApplication(
                                      [('/', views.MainPage),
                                       ('/wishes', views.wishes),
+                                      ('/gcal', views.gcal),
                                       (r'/feed/(.+)', views.view_feed)],
                                      debug=True)
 
