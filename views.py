@@ -14,7 +14,7 @@ try:
 except ImportError:
   from elementtree import ElementTree
 import gdata.calendar.service
-from gdata.service import NonAuthSubToken
+from gdata.service import NonAuthSubToken, RequestError
 import gdata.service
 import atom.service
 import gdata.calendar
@@ -36,6 +36,8 @@ class Users(db.Model):
   facebook_id = db.StringProperty(required=True)
   facebook_token = db.StringProperty(required=True)
   google_token = db.StringProperty(required=True)
+  bday_cal = db.LinkProperty(required=True)
+  event_cal = db.LinkProperty(required=True)
 
 class Feed(db.Model):
   user_id = db.StringProperty(required=True)
@@ -132,14 +134,14 @@ def upgrade_google_token(token):
   calendar_service.UpgradeToSessionToken()
   return (calendar_service)
 
-def grab_google(facebook_id, email, facebook_token, token_param):
+def gcal_connect(facebook_id, email, facebook_token, token_param):
   """Firstly check the database for this user, see if they have a working
   token.
   
   If not check the token parameter, upgrade that to a nice session token
   and store it in the database.
 
-  Return the calendar object or None if there are no working tokens."""
+  Return the user and calendar object or None if there are no working tokens."""
   # First check the database
   user = Users.all().filter("facebook_id =", facebook_id)
   if user.count():
@@ -148,21 +150,80 @@ def grab_google(facebook_id, email, facebook_token, token_param):
     
     if calendar_service:
       # Great we're done
-      return calendar_service
+      return user[0], calendar_service
     
   # No joy? Let's check the parameter
   if token_param:
     calendar_service = upgrade_google_token(token_param)
 
     if calendar_service:
+      # Create their Facebook calendars
+      bdays_cal = create_calendar(calendar_service,
+                                  'Birthdays',
+                                  'Facebook friend birthdays')
+      events_cal = create_calendar(calendar_service,
+                                   'Events',
+                                   'Facebook events')
+
       # Record the token in our database
       user = Users(email=email,
                    facebook_id=facebook_id,
                    facebook_token=facebook_token,
-                   google_token=calendar_service.GetAuthSubToken())
+                   google_token=calendar_service.GetAuthSubToken(),
+                   bday_cal=bdays_cal.GetEditLink().href,
+                   event_cal=events_cal.GetEditLink().href)
       user.put()
       # Great a new user's first time
-      return calendar_service
+      return user, calendar_service
+  # Saves us a job later
+  return None, None
+
+def create_calendar(gcal, title, summary):
+  """Simple wrapper to create a new Goolge Calendar."""
+  calendar = gdata.calendar.CalendarListEntry()
+  calendar.title = atom.Title(text=title)
+  calendar.summary = atom.Summary(text=summary)
+  calendar.where = gdata.calendar.Where(value_string='Facebook')
+  calendar.timezone = gdata.calendar.Timezone(value='UTC')
+  calendar.hidden = gdata.calendar.Hidden(value='false')
+  calendar.color = gdata.calendar.Color(value='#2952A3')
+  return gcal.InsertCalendar(new_calendar=calendar)
+
+def find_calendar(gcal, calendar_link):
+  """Return a calendar or None if not found"""
+  try:
+    return gcal.Query(calendar_link)
+  except RequestError:
+    return None
+
+def update_events(user, calendar):
+  return None
+
+def update_birthdays(user, gcal, bday_cal):
+  event = gdata.calendar.CalendarEventEntry()
+  event.content = atom.Content(text='Tennis with John October 30 3pm-3:30pm')
+  event.quick_add = gdata.calendar.QuickAdd(value='true')
+  return gcal.InsertEvent(event, bday_cal.content.src)
+  
+def maintain_calendars(gcal, user):
+  """With the google calendar connection update the user's calendars.
+  Check the calendars exist, update existing calendars. If neither exist
+  revoke the google token and delete the user from our database.
+  Returns True if connected or False if not."""
+  bday_cal = find_calendar(gcal, user.bday_cal)
+  if bday_cal:
+    update_birthdays(user, gcal, bday_cal)
+  
+  event_cal = find_calendar(gcal, user.event_cal)
+  if event_cal:
+    update_events(user, gcal)
+
+  if event_cal or bday_cal:
+    return True
+  else:
+    # gcal.AuthSubRevokeToken()
+    user.delete()
+    return False
 
 class gcal(webapp.RequestHandler):
   def get(self):
@@ -170,14 +231,15 @@ class gcal(webapp.RequestHandler):
     facebook_id = 'dave'
     email = 'kzar@kzar.co.uk'
     facebook_token = 'blablah'
-    calendar = grab_google(facebook_id, email, 
-                           facebook_token, self.request.get("token"))
 
-    if calendar:
-      feed = calendar.GetCalendarListFeed()
-      for i, a_calendar in enumerate(feed.entry):
-        print '\t%s. %s' % (i, a_calendar.title.text,)
-    else:
+    user, gcal = gcal_connect(facebook_id, email, 
+                        facebook_token, self.request.get("token"))
+  
+    if gcal:
+      connected = maintain_calendars(gcal, user)
+      self.response.out.write('<b>Connected to Google calendars</b>')
+    
+    if not gcal or not connected:
       self.response.out.write('<a href="%s">Login to your Google account</a>' % 
                               GetAuthSubUrl(self.request.url))      
       
