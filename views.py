@@ -14,6 +14,7 @@ try:
 except ImportError:
   from elementtree import ElementTree
 import gdata.calendar.service
+from gdata.service import NonAuthSubToken
 import gdata.service
 import atom.service
 import gdata.calendar
@@ -29,6 +30,12 @@ import icalendar as ical
 
 FACEBOOK_APP_ID = "xXxXxXxXxXx"
 FACEBOOK_APP_SECRET = "xXxXxXxXxXx"
+
+class Users(db.Model):
+  email = db.StringProperty(required=True)
+  facebook_id = db.StringProperty(required=True)
+  facebook_token = db.StringProperty(required=True)
+  google_token = db.StringProperty(required=True)
 
 class Feed(db.Model):
   user_id = db.StringProperty(required=True)
@@ -105,26 +112,75 @@ def GetAuthSubUrl(url):
   calendar_service = gdata.calendar.service.CalendarService()
   return calendar_service.GenerateAuthSubURL(url, scope, secure, session);
 
+def check_google_token(token):
+  """Check with google if a token is valid. If so return the
+  calendar service, if not return None"""
+  calendar_service = gdata.calendar.service.CalendarService()
+  calendar_service.SetAuthSubToken(token)
+  try:
+    calendar_service.AuthSubTokenInfo()
+  except NonAuthSubToken:
+    return None
+  else:
+    return calendar_service
+
+def upgrade_google_token(token):
+  """Take a token string that google gave us and upgrade it
+  to a useable session one. Return the calendar object or None"""
+  calendar_service = gdata.calendar.service.CalendarService()
+  calendar_service.SetAuthSubToken(token)
+  calendar_service.UpgradeToSessionToken()
+  return (calendar_service)
+
+def grab_google(facebook_id, email, facebook_token, token_param):
+  """Firstly check the database for this user, see if they have a working
+  token.
+  
+  If not check the token parameter, upgrade that to a nice session token
+  and store it in the database.
+
+  Return the calendar object or None if there are no working tokens."""
+  # First check the database
+  user = Users.all().filter("facebook_id =", facebook_id)
+  if user.count():
+    # Already registered, make sure token is valid
+    calendar_service = check_google_token(user[0].google_token)
+    
+    if calendar_service:
+      # Great we're done
+      return calendar_service
+    
+  # No joy? Let's check the parameter
+  if token_param:
+    calendar_service = upgrade_google_token(token_param)
+
+    if calendar_service:
+      # Record the token in our database
+      user = Users(email=email,
+                   facebook_id=facebook_id,
+                   facebook_token=facebook_token,
+                   google_token=calendar_service.GetAuthSubToken())
+      user.put()
+      # Great a new user's first time
+      return calendar_service
 
 class gcal(webapp.RequestHandler):
   def get(self):
-    # Grab the temporary token
-    token = self.request.get("token")
-    if token:
-      # Turn it into a permanent one
-      calendar_service = gdata.calendar.service.CalendarService()
-      calendar_service.SetAuthSubToken(token)
-      calendar_service.UpgradeToSessionToken()
+    # Set my userid for now
+    facebook_id = 'dave'
+    email = 'kzar@kzar.co.uk'
+    facebook_token = 'blablah'
+    calendar = grab_google(facebook_id, email, 
+                           facebook_token, self.request.get("token"))
 
-      # Now print out their calender names for the fuck of it
-      feed = calendar_service.GetCalendarListFeed()
+    if calendar:
+      feed = calendar.GetCalendarListFeed()
       for i, a_calendar in enumerate(feed.entry):
-        self.response.out.write('\t%s. %s' % (i, a_calendar.title.text,))
+        print '\t%s. %s' % (i, a_calendar.title.text,)
     else:
-      # No token yet, let's ask them for one
-      authSubUrl = GetAuthSubUrl(self.request.url)
-      self.response.out.write('<a href="%s">Login to your Google account</a>' % authSubUrl)
-
+      self.response.out.write('<a href="%s">Login to your Google account</a>' % 
+                              GetAuthSubUrl(self.request.url))      
+      
 ## TODO http://code.google.com/apis/calendar/data/1.0/developers_guide_python.html#AuthAuthSub
 
 class wishes(webapp.RequestHandler):
