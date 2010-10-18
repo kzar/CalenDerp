@@ -24,7 +24,6 @@ import sys
 import string
 import time
 
-
 sys.path.insert(0, 'icalendar.zip')
 import icalendar as ical
 
@@ -38,7 +37,8 @@ class Users(db.Model):
   google_token = db.StringProperty(required=True)
   bday_cal = db.LinkProperty(required=True)
   event_cal = db.LinkProperty(required=True)
-  birthdays = db.ListProperty(required=False)
+  events = db.StringListProperty()
+  birthdays = db.StringListProperty()
 
 class Feed(db.Model):
   user_id = db.StringProperty(required=True)
@@ -51,6 +51,8 @@ def valid_birthday(day, month):
   try:
     birthday = datetime(datetime.today().year, month, day)
   except ValueError:
+    return False
+  except TypeError:
     return False
   else:
     return birthday.strftime('%B %d')
@@ -170,8 +172,23 @@ def find_calendar(gcal, calendar_link):
 def update_events(user, calendar):
   return None
 
+def diff_birthdays(new_bdays, old_bdays):
+  """Take a list of new and old birthdays and return a list of changes to make.
+  I'm not sure how this function should work or what it should really return."""
+  ## TODO
+  # What should this return exactly?
+  # How would it would?
+  return new_bdays
+
+def enqueue_updates(updates):
+  """Take a list of updates and add them to the Task Queue."""
+  # TODO
+  # What format should the updates be in?
+  # Where is the task handler?
+  # What arguments would the task handler need?
+
 def update_birthdays(user, gcal, bday_cal):
-"""Figure out what needs updating for the birthdays calendar. If there are any
+  """Figure out what needs updating for the birthdays calendar. If there are any
 changes to do, queue them up and return a count. If not return None."""
   # TODO
   # 1 - Grab the birthdays from Facebook
@@ -191,10 +208,10 @@ changes to do, queue them up and return a count. If not return None."""
   
   if changed_birthdays:
     # Update our database
-    user.bithdays = birthdays
-    user.put
+    user.birthdays = birthdays
+    user.put()
     # Add the changes to the Task Queue
-    queue_updates(changed_birthdays)
+    enqueue_updates(changed_birthdays)
     return len(changed_birthdays)
   else: 
     return None
@@ -227,17 +244,17 @@ def maintain_calendars(gcal, user):
 class gcal(webapp.RequestHandler):
   def get(self):
     # Set my userid for now
-    facebook_id = 'dave'
+    facebook_id = '691580472'
     email = 'kzar@kzar.co.uk'
-    facebook_token = 'blablah'
+    facebook_token = 'xXxXxXxXxXx|fa9647df24f2f166ad5251e4-691580472|lugPxybzOCHh7aPKLPTycml5T9Y'
 
     user, gcal = gcal_connect(facebook_id, email, 
                         facebook_token, self.request.get("token"))
   
     if gcal:
       connected, bday_updates, event_updates = maintain_calendars(gcal, user)
-      self.response.out.write('<b>Connected to Google calendars</b>')
-      self.response.out.write('<b>' + bday_updates + ' changes added to queue</b>')
+      self.response.out.write('<p>Connected to Google calendars.. </p>')
+      self.response.out.write('<b>' + str(bday_updates) + ' changes added to queue</b>')
     
     if not gcal or not connected:
       self.response.out.write('<a href="%s">Login to your Google account</a>' % 
