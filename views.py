@@ -38,6 +38,7 @@ class Users(db.Model):
   google_token = db.StringProperty(required=True)
   bday_cal = db.LinkProperty(required=True)
   event_cal = db.LinkProperty(required=True)
+  birthdays = db.ListProperty(required=False)
 
 class Feed(db.Model):
   user_id = db.StringProperty(required=True)
@@ -45,66 +46,36 @@ class Feed(db.Model):
   auth_token = db.StringProperty(required=True)
   feed_type = db.StringProperty(required=True, choices=set(["birthdays", "events"]))
 
-def render_birthday_feed(the_feed):
-  """
-  This does all the magic, takes the feed object and returns a nice iCal file.
-  """
-  # Set things up
-  cal = ical.Calendar()
-  date_regexp = re.compile("^([0-9]+)/([0-9]+)/?([0-9]*)$")
-    
-  # Run the facebook query
-  graph = facebook.GraphAPI(the_feed.auth_token)
+def valid_birthday(day, month):
+  """Take a day + month and make sure it's a valid date."""
   try:
-    results = graph.get_object("me/friends", fields="link,birthday,name,picture")
-  except DownloadError:
-    return
+    birthday = datetime(datetime.today().year, month, day)
+  except ValueError:
+    return False
+  else:
+    return birthday.strftime('%B %d')
 
-  if results and isinstance(results, dict) and results.has_key('data'):
-    # Loop through results creating the ical object
-    for friend in results['data']:
-      r = date_regexp.search(friend.get('birthday', ''))
-        
-      if r:
-        day = int(r.groups()[1])
-        month = int(r.groups()[0])
-        year = datetime.today().year
-        title = friend['name'] + '\'s birthday!'
-          
-        # Check for dodgy dates
-        try:
-          datetime(year, month,day)
-        except ValueError:
-          logging.debug("Invalid date: " + str(day) + "/" + str(month) + "/" + str(year))
-          continue
+def parse_birthday(facebook_string):
+  """Parse a Facebook birthday, return it in a Gcal friendly string or None"""
+  date_regexp = re.compile("^([0-9]+)/([0-9]+)/?([0-9]*)$")
+  birthday = date_regexp.search(facebook_string)
+  if birthday:
+    return valid_birthday(birthday.groups()[1], birthday.groups()[0])
 
-        entry = ical.Event()
-        entry.add('summary', title)
-        entry.add('dtstart', datetime(year, month, day, 9, 0, tzinfo=ical.UTC))
-        entry.add('dten', datetime(year, month, day, 17, 0, tzinfo=ical.UTC))
-#                entry.add('x-google-calendar-content-title', title)
-        entry.add('x-google-calendar-content-icon', friend['picture'])
-#                entry.add('x-google-calendar-content-url', friend['picture'])
-#                entry.add('x-google-calendar-content-type', 'image')
-#                entry.add('x-google-calendar-content-width', 50)
-#                entry.add('x-google-calendar-content-height', 50)
-                #entry.add('x-google-calendar-content-url', friend['link'])
-                
-        cal.add_component(entry)
-      else:
-        # No results, we probably need to resync.
-        # Return a ical file that gives the user a clue..
-        day = datetime.now().day
-        month = datetime.now().month
-        year = datetime.now().year
+def bday_map_helper(friend):
+  """Don't know how to do this properly in Python, would be easier in Lisp"""
+  birthday = parse_birthday(friend.get('birthday', ''))
+  if birthday:
+    (friend['name'], friend['picture'], birthday)
 
-        entry = ical.Event()
-        entry.add('summary', "Deerrrrrpp out-of-sync with Facebook! Go to http://apps.facebook.com/calenderp/ and it should start working again")
-        entry.add('dtstart', datetime(year, month, day, 9, 0, tzinfo=ical.UTC))
-        entry.add('dten', datetime(year, month, day, 17, 0, tzinfo=ical.UTC))
-        cal.add_component(entry)
-        
-  return cal.as_string()
+def grab_birthdays(user):
+  """Take a user and return a list of their birthdays"""
+  graph = facebook.GraphAPI(user.facebook_token)
+  
+  friends = graph.get_object("me/friends", fields="link,birthday,name,picture")
+
+  # FIXME - where friend has a birthday, how to check without running helper twice?
+  return [bday_map_helper(friend) for friend in friends['data']]
 
 def GetAuthSubUrl(url):
   #url = 'http://calenderp.appspot.com'
@@ -200,10 +171,38 @@ def update_events(user, calendar):
   return None
 
 def update_birthdays(user, gcal, bday_cal):
-  event = gdata.calendar.CalendarEventEntry()
-  event.content = atom.Content(text='Tennis with John October 30 3pm-3:30pm')
-  event.quick_add = gdata.calendar.QuickAdd(value='true')
-  return gcal.InsertEvent(event, bday_cal.content.src)
+"""Figure out what needs updating for the birthdays calendar. If there are any
+changes to do, queue them up and return a count. If not return None."""
+  # TODO
+  # 1 - Grab the birthdays from Facebook
+  # 2 - Store that as a big TEXT field in the Datastore?
+  # 3 - If there was an existing entry in the Datastore diff the two entrys
+  #     before overwriting. We can see if there have been any changes.
+  # 4 - Add the changes to the Task Queue*
+  # 5 - Setup the Task Queue handler to go and update Google Calendar
+  # 6 - Test all that and then delete the ical stuff
+  #
+  # * http://code.google.com/appengine/docs/python/taskqueue/
+
+  # Grab all the birthdays and figure out what's new
+  birthdays = grab_birthdays(user)
+  past_birthdays = user.birthdays
+  changed_birthdays = diff_birthdays(birthdays, past_birthdays)
+  
+  if changed_birthdays:
+    # Update our database
+    user.bithdays = birthdays
+    user.put
+    # Add the changes to the Task Queue
+    queue_updates(changed_birthdays)
+    return len(changed_birthdays)
+  else: 
+    return None
+    
+#  event = gdata.calendar.CalendarEventEntry()
+#  event.content = atom.Content(text='Tennis with John October 30 3pm-3:30pm')
+#  event.quick_add = gdata.calendar.QuickAdd(value='true')
+#  return gcal.InsertEvent(event, bday_cal.content.src)
   
 def maintain_calendars(gcal, user):
   """With the google calendar connection update the user's calendars.
@@ -212,14 +211,14 @@ def maintain_calendars(gcal, user):
   Returns True if connected or False if not."""
   bday_cal = find_calendar(gcal, user.bday_cal)
   if bday_cal:
-    update_birthdays(user, gcal, bday_cal)
+    bday_changes = update_birthdays(user, gcal, bday_cal)
   
   event_cal = find_calendar(gcal, user.event_cal)
   if event_cal:
-    update_events(user, gcal)
+    event_changes = update_events(user, gcal)
 
   if event_cal or bday_cal:
-    return True
+    return True, bday_changes, event_changes
   else:
     # gcal.AuthSubRevokeToken()
     user.delete()
@@ -236,8 +235,9 @@ class gcal(webapp.RequestHandler):
                         facebook_token, self.request.get("token"))
   
     if gcal:
-      connected = maintain_calendars(gcal, user)
+      connected, bday_updates, event_updates = maintain_calendars(gcal, user)
       self.response.out.write('<b>Connected to Google calendars</b>')
+      self.response.out.write('<b>' + bday_updates + ' changes added to queue</b>')
     
     if not gcal or not connected:
       self.response.out.write('<a href="%s">Login to your Google account</a>' % 
