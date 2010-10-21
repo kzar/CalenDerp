@@ -1,9 +1,11 @@
 import os, sys, re, facebook, logging
 from google.appengine.api import users, urlfetch
+from google.appengine.api.labs import taskqueue
 from google.appengine.ext import webapp
 from google.appengine.ext import db
 from google.appengine.ext.webapp import template
 from google.appengine.api.urlfetch import DownloadError
+from django.utils import simplejson as json
 from datetime import datetime
 from uuid import uuid4
 
@@ -20,7 +22,6 @@ import atom.service
 import gdata.calendar
 import atom
 import getopt
-import sys
 import string
 import time
 
@@ -35,10 +36,10 @@ class Users(db.Model):
   facebook_id = db.StringProperty(required=True)
   facebook_token = db.StringProperty(required=True)
   google_token = db.StringProperty(required=True)
-  bday_cal = db.LinkProperty(required=True)
-  event_cal = db.LinkProperty(required=True)
-  events = db.StringListProperty()
-  birthdays = db.StringListProperty()
+  bday_cal = db.LinkProperty()
+  event_cal = db.LinkProperty()
+  events = db.TextProperty()
+  birthdays = db.TextProperty()
 
 class Feed(db.Model):
   user_id = db.StringProperty(required=True)
@@ -48,6 +49,8 @@ class Feed(db.Model):
 
 def valid_birthday(day, month):
   """Take a day + month and make sure it's a valid date."""
+#  day = day + 1
+
   try:
     birthday = datetime(datetime.today().year, month, day)
   except ValueError:
@@ -62,13 +65,7 @@ def parse_birthday(facebook_string):
   date_regexp = re.compile("^([0-9]+)/([0-9]+)/?([0-9]*)$")
   birthday = date_regexp.search(facebook_string)
   if birthday:
-    return valid_birthday(birthday.groups()[1], birthday.groups()[0])
-
-def bday_map_helper(friend):
-  """Don't know how to do this properly in Python, would be easier in Lisp"""
-  birthday = parse_birthday(friend.get('birthday', ''))
-  if birthday:
-    (friend['name'], friend['picture'], birthday)
+    return valid_birthday(int(birthday.groups()[1]), int(birthday.groups()[0]))
 
 def grab_birthdays(user):
   """Take a user and return a list of their birthdays"""
@@ -76,8 +73,16 @@ def grab_birthdays(user):
   
   friends = graph.get_object("me/friends", fields="link,birthday,name,picture")
 
-  # FIXME - where friend has a birthday, how to check without running helper twice?
-  return [bday_map_helper(friend) for friend in friends['data']]
+  # I really do not like this block of code :(
+  results = []
+  for friend in friends['data']:    
+    birthday = parse_birthday(friend.get('birthday', ''))
+    if birthday:
+      results.append({'id': friend['id'],
+                      'name': friend['name'], 
+                     'pic': friend['picture'], 
+                     'bday': birthday})
+  return results
 
 def GetAuthSubUrl(url):
   #url = 'http://calenderp.appspot.com'
@@ -130,22 +135,16 @@ def gcal_connect(facebook_id, email, facebook_token, token_param):
     calendar_service = upgrade_google_token(token_param)
 
     if calendar_service:
-      # Create their Facebook calendars
-      bdays_cal = create_calendar(calendar_service,
-                                  'Birthdays',
-                                  'Facebook friend birthdays')
-      events_cal = create_calendar(calendar_service,
-                                   'Events',
-                                   'Facebook events')
-
       # Record the token in our database
       user = Users(email=email,
                    facebook_id=facebook_id,
                    facebook_token=facebook_token,
-                   google_token=calendar_service.GetAuthSubToken(),
-                   bday_cal=bdays_cal.GetEditLink().href,
-                   event_cal=events_cal.GetEditLink().href)
+                   google_token=calendar_service.GetAuthSubToken())
       user.put()
+
+      # Create their Calendars 
+      updates = [{'type': 'addbdaycal'}, {'type': 'addeventcal'}]
+      enqueue_updates(updates, user.google_token, '')
       # Great a new user's first time
       return user, calendar_service
   # Saves us a job later
@@ -172,29 +171,170 @@ def find_calendar(gcal, calendar_link):
 def update_events(user, calendar):
   return None
 
-def diff_birthdays(new_bdays, old_bdays):
-  """Take a list of new and old birthdays and return a list of changes to make.
-  I'm not sure how this function should work or what it should really return."""
-  ## TODO
-  # What should this return exactly?
-  # How would it would?
-  return new_bdays
+def list_contains(needle, haystack):
+  """Does a list contain something? Return something if yes or None if no"""
+  try:
+    haystack.index(needle)
+  except ValueError:
+    return None
+  else:
+    return needle
 
-def enqueue_updates(updates):
+def any_changes(new, old):
+  """Take two dict's and look for differences in equivalent key's values.
+  (Does not look for missing or extra entries.) Returns True or False"""
+  for k,v in new.iteritems():    
+    if v != old[k]:
+      return True
+  return False
+
+def diff_birthdays(new_bdays, old_birthdays):
+  """Take a list of new and old birthdays and return a list of changes to make.
+Examples of the change format:
+{'id': '342432423', 'type': 'update', changes: {'title': 'newtitle'}}
+{'id': '342432423', 'type': 'insert', 'title': 'newtitle', ... }
+{'id': '342432423', 'type': 'delete'}"""
+  # There has got to be a better way
+  updates = []
+
+  # Check for deletes
+  new_bday_ids = [b['id'] for b in new_bdays]
+  for birthday in old_birthdays:
+    if not list_contains(birthday['id'], new_bday_ids):
+      # Delete entry
+      updates.append({'type': 'delete', 'id': birthday['id']})
+
+  # Kludge the old bdays into a dict so we can look up by the id more easily  
+  old_bdays = {}
+  for birthday in old_birthdays:
+    old_bdays[birthday['id']] = birthday
+
+  # Check for inserts and updates
+  for birthday in new_bdays:
+    if not old_bdays.has_key(birthday['id']):
+      # New entry
+      birthday['type'] = 'insert'
+      updates.append(birthday)
+    else:
+      # Check for any differences
+      if any_changes(birthday, old_bdays[birthday['id']]):
+        birthday['type'] = 'update'
+        updates.append(birthday)
+          
+  return updates
+
+def enqueue_updates(updates, token, calendar, chunk_size=20):
   """Take a list of updates and add them to the Task Queue."""
-  # TODO
-  # What format should the updates be in?
-  # Where is the task handler?
-  # What arguments would the task handler need?
+  for i in range(0, len(updates), chunk_size):
+    taskqueue.add(url='/worker',
+                  params={'tasks': json.dumps(updates[i:i+chunk_size]),
+                          'calendar': calendar,
+                          'token': token})
+
+def gcal_quick_add(gcal, calendar, content, fb_id,
+                   event=gdata.calendar.CalendarEventEntry()):
+  """Wrapper for the quick add Google Calendar feature."""
+  event.content = atom.Content(text=content)
+  event.quick_add = gdata.calendar.QuickAdd(value='true')
+  fb_id_property = gdata.calendar.ExtendedProperty(name="fb_id", value=fb_id)
+  event.extended_property.append(fb_id_property)
+  logging.info("Creating Event: " + content)
+  return gcal.InsertEvent(event, calendar)
+
+def format_extended_dict(d):
+  """Take a dictionary and format it for use with a ExtendedProperty query."""
+  output = ''
+  for k,v in d.iteritems():
+    output += '[' + str(k) + ':' + str(v) + ']'
+  return output
+
+def find_event(gcal, calendar, search_term=None, extended=None):
+  """Searches the given calendar for the search text. Returns the first result
+  or None."""
+  # Set up the search query
+  if extended:
+    params = {'extq': format_extended_dict(extended)}
+  else:
+    params = None
+
+  print(str(extended))
+
+  query = gdata.calendar.service.CalendarEventQuery('default', 
+                                                    'private', 
+                                                    'full',
+                                                    params=params)
+  query.__dict__['feed'] = calendar
+  if search_term:
+    query.text_query = search_term
+
+  # Return the results
+  try:
+    return calendar_service.CalendarQuery(query)[0]
+  except:
+    logging.info('Coudln\'t find event ' + (search_term or str(params)))
+    return None
+
+class worker(webapp.RequestHandler):
+  """Handles /worker requests which processes the work from task queue"""
+  def post(self):
+    # Grab the parameters
+    tasks = json.loads(self.request.get("tasks"))
+    calendar = self.request.get("calendar")
+    token = self.request.get("token")
+
+    # Connect to Google calendar
+    gcal = check_google_token(token)
+    
+    # Do the workSetup all the tasks
+    for task in tasks:
+      if task['type'] == 'addbdaycal':
+        # Adding a new calendar
+        logging.info("Adding calendar Birthdays")
+        bday_cal = create_calendar(gcal,
+                                    'Birthdays',
+                                    'Facebook friend birthdays')
+        print " searching ... " +token
+
+        user = Users.all().filter("google_token =", token)[0]
+        user.bday_cal = bday_cal.GetEditLink().href
+        user.put()
+      if task['type'] == 'addeventcal':
+        # Adding a new calendar
+        logging.info("Adding calendar Events")
+        event_cal = create_calendar(gcal,
+                                    'Events',
+                                    'Facebook events')
+        user = Users.all().filter("google_token =", token)[0]
+        user.event_cal = event_cal.GetEditLink().href
+        user.put()
+      if task['type'] == 'insert':
+        # Adding a new event
+        logging.info("Adding event " + str(event.title))
+        content = task['name'] + "'s Birthday " + task['bday'] + " yearly"
+        event = gcal_quick_add(gcal, calendar, content, task['id'])
+      if task['type'] == 'update':
+        # Updating an event with changes
+        event = find_event(gcal, calendar, extended={'fb_id':task['id']})
+        if event:
+          logging.info("Updating event " + str(event.title))
+          content = task['name'] + "'s Birthday " + task['bday'] + " yearly"
+          event = gcal_quick_add(gcal, calendar, content, task['id'], event)
+          gcal.UpdateEvent(event.GetEditLink().href, event)
+      if task['type'] == 'remove':
+        # Old event we need to delete
+        event = find_event(gcal, calendar, extended={'fb_id':task['id']})
+        if event:
+          logging.info("Deleting event " + str(event.title))
+          calendar_service.DeleteEvent(event.GetEditLink().href)  
 
 def update_birthdays(user, gcal, bday_cal):
   """Figure out what needs updating for the birthdays calendar. If there are any
 changes to do, queue them up and return a count. If not return None."""
   # TODO
-  # 1 - Grab the birthdays from Facebook
-  # 2 - Store that as a big TEXT field in the Datastore?
-  # 3 - If there was an existing entry in the Datastore diff the two entrys
-  #     before overwriting. We can see if there have been any changes.
+  #X1 - Grab the birthdays from Facebook
+  #X2 - Store that as a big TEXT field in the Datastore?
+  #X3 - If there was an existing entry in the Datastore diff the two entrys
+  #X    before overwriting. We can see if there have been any changes.
   # 4 - Add the changes to the Task Queue*
   # 5 - Setup the Task Queue handler to go and update Google Calendar
   # 6 - Test all that and then delete the ical stuff
@@ -203,15 +343,20 @@ changes to do, queue them up and return a count. If not return None."""
 
   # Grab all the birthdays and figure out what's new
   birthdays = grab_birthdays(user)
-  past_birthdays = user.birthdays
+  try:
+    past_birthdays = json.loads(user.birthdays)
+  except:
+    past_birthdays = []
   changed_birthdays = diff_birthdays(birthdays, past_birthdays)
   
   if changed_birthdays:
     # Update our database
-    user.birthdays = birthdays
+    user.birthdays = json.dumps(birthdays)
     user.put()
     # Add the changes to the Task Queue
-    enqueue_updates(changed_birthdays)
+    enqueue_updates(changed_birthdays, 
+                    gcal.GetAuthSubToken(), 
+                    bday_cal.content.src)
     return len(changed_birthdays)
   else: 
     return None
@@ -252,14 +397,18 @@ class gcal(webapp.RequestHandler):
                         facebook_token, self.request.get("token"))
   
     if gcal:
-      connected, bday_updates, event_updates = maintain_calendars(gcal, user)
+      if user.bday_cal or user.event_cal:
+        connected, bday_updates, event_updates = maintain_calendars(gcal, user)
+      else:
+        bday_updates = 'blah'
+        connected = True
       self.response.out.write('<p>Connected to Google calendars.. </p>')
       self.response.out.write('<b>' + str(bday_updates) + ' changes added to queue</b>')
     
     if not gcal or not connected:
       self.response.out.write('<a href="%s">Login to your Google account</a>' % 
                               GetAuthSubUrl(self.request.url))      
-      
+
 ## TODO http://code.google.com/apis/calendar/data/1.0/developers_guide_python.html#AuthAuthSub
 
 class wishes(webapp.RequestHandler):
@@ -359,7 +508,7 @@ class view_feed(webapp.RequestHandler):
         bday_feed = render_birthday_feed(the_feed)
         if bday_feed:
           self.response.out.write(bday_feed)
-          logging.info("Rendering bithdays feed.")
+          logging.info("Rendering birthdays feed.")
         else:
           self.error(504)
           logging.error("Connection to Facebook API failed, can't serve their ical :(")

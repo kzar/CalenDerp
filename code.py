@@ -6,6 +6,7 @@ application = webapp.WSGIApplication(
                                      [('/', views.MainPage),
                                       ('/wishes', views.wishes),
                                       ('/gcal', views.gcal),
+                                      ('/worker', views.worker),
                                       (r'/feed/(.+)', views.view_feed)],
                                      debug=True)
 
