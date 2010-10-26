@@ -58,7 +58,7 @@ def valid_birthday(day, month):
   except TypeError:
     return False
   else:
-    return birthday.strftime('%B %d')
+    return birthday.day, birthday.month
 
 def parse_birthday(facebook_string):
   """Parse a Facebook birthday, return it in a Gcal friendly string or None"""
@@ -75,13 +75,16 @@ def grab_birthdays(user):
 
   # I really do not like this block of code :(
   results = []
-  for friend in friends['data']:    
-    birthday = parse_birthday(friend.get('birthday', ''))
-    if birthday:
+  for friend in friends['data']:
+    try:
+      day, month = parse_birthday(friend.get('birthday', ''))
       results.append({'id': friend['id'],
                       'name': friend['name'], 
-                     'pic': friend['picture'], 
-                     'bday': birthday})
+                      'pic': friend['picture'], 
+                      'day': day,
+                      'month': month})
+    except TypeError:
+      pass
   return results
 
 def GetAuthSubUrl(url):
@@ -231,14 +234,51 @@ def enqueue_updates(updates, token, calendar, chunk_size=20):
                           'calendar': calendar,
                           'token': token})
 
-def gcal_quick_add(gcal, calendar, content, fb_id,
-                   event=gdata.calendar.CalendarEventEntry()):
+def add_bday_event(gcal, calendar, day, month, name, picture, fb_id, event=None):
+  """Create and add a birthday event to Google Calendar."""
+  if not event:
+    event = gdata.calendar.CalendarEventEntry()
+  
+  content = name + "'s Birthday"
+  year = datetime.today().year
+  start = datetime(year, month, day, 12, 0)
+  end = datetime(year, month, day + 1, 12, 0)
+
+  recurrence_data = ("DTSTART;VALUE=DATE:" + start.strftime('%Y%m%d') + "\r\n" +
+                     "DTEND;VALUE=DATE:" + end.strftime('%Y%m%d') + "\r\n" +
+                     "RRULE:FREQ=YEARLY\r\n")
+
+  web_content_link = gdata.calendar.WebContentLink(title=content, href=picture, 
+                                     link_type="image/jpeg")
+
+  event.link.append(web_content_link)
+
+  event.recurrence = gdata.calendar.Recurrence(text=recurrence_data)
+  event.title = atom.Title(text=content)
+  event.content = atom.Content(text=content)
+
+  fb_id_property = gdata.calendar.ExtendedProperty(name="+fb_id+", value=fb_id)
+  event.extended_property.append(fb_id_property)
+
+  return gcal.InsertEvent(event, calendar)
+
+def gcal_quick_add(gcal, calendar, content, fb_id, event=None):
   """Wrapper for the quick add Google Calendar feature."""
+  if not event:
+    event = gdata.calendar.CalendarEventEntry()
+
   event.content = atom.Content(text=content)
   event.quick_add = gdata.calendar.QuickAdd(value='true')
-  fb_id_property = gdata.calendar.ExtendedProperty(name="fb_id", value=fb_id)
+  fb_id_property = gdata.calendar.ExtendedProperty(name="+fb_id+", value=fb_id)
   event.extended_property.append(fb_id_property)
+
+  event.extended_property.append(gdata.calendar.ExtendedProperty(name='HERBERT', value='AHHHHH'))
+
+
+  event.extended_property.append(gdata.calendar.ExtendedProperty(name='http://www.example.com/schemas/2005#mycal.idle', value='AHHHHH'))
+
   logging.info("Creating Event: " + content)
+  logging.info("Extended properties: " + str(event))
   return gcal.InsertEvent(event, calendar)
 
 def format_extended_dict(d):
@@ -267,10 +307,15 @@ def find_event(gcal, calendar, search_term=None, extended=None):
   if search_term:
     query.text_query = search_term
 
+  query.max_results = 1000
+
   # Return the results
   try:
-    return calendar_service.CalendarQuery(query)[0]
-  except:
+    return gcal.CalendarQuery(query).entry
+  except RequestError, e:
+    logging.error('Received error when searching:' + str(e))
+    return None
+  except IndexError:
     logging.info('Coudln\'t find event ' + (search_term or str(params)))
     return None
 
@@ -296,7 +341,8 @@ class worker(webapp.RequestHandler):
         print " searching ... " +token
 
         user = Users.all().filter("google_token =", token)[0]
-        user.bday_cal = bday_cal.GetEditLink().href
+        user.bday_cal = bday_cal.content.src
+        #user.bday_cal = bday_cal.GetEditLink().href
         user.put()
       if task['type'] == 'addeventcal':
         # Adding a new calendar
@@ -309,9 +355,12 @@ class worker(webapp.RequestHandler):
         user.put()
       if task['type'] == 'insert':
         # Adding a new event
+#        content = task['name'] + "'s Birthday " + task['bday'] + " yearly"
+
+        event = add_bday_event(gcal, calendar, task['day'], task['month'], 
+                               task['name'], task['pic'], task['id'])
+#       event = gcal_quick_add(gcal, calendar, content, task['id'])
         logging.info("Adding event " + str(event.title))
-        content = task['name'] + "'s Birthday " + task['bday'] + " yearly"
-        event = gcal_quick_add(gcal, calendar, content, task['id'])
       if task['type'] == 'update':
         # Updating an event with changes
         event = find_event(gcal, calendar, extended={'fb_id':task['id']})
@@ -356,7 +405,7 @@ changes to do, queue them up and return a count. If not return None."""
     # Add the changes to the Task Queue
     enqueue_updates(changed_birthdays, 
                     gcal.GetAuthSubToken(), 
-                    bday_cal.content.src)
+                    bday_cal)
     return len(changed_birthdays)
   else: 
     return None
@@ -371,7 +420,8 @@ def maintain_calendars(gcal, user):
   Check the calendars exist, update existing calendars. If neither exist
   revoke the google token and delete the user from our database.
   Returns True if connected or False if not."""
-  bday_cal = find_calendar(gcal, user.bday_cal)
+  bday_cal = user.bday_cal
+  #bday_cal = find_calendar(gcal, user.bday_cal)
   if bday_cal:
     bday_changes = update_birthdays(user, gcal, bday_cal)
   
@@ -408,6 +458,8 @@ class gcal(webapp.RequestHandler):
     if not gcal or not connected:
       self.response.out.write('<a href="%s">Login to your Google account</a>' % 
                               GetAuthSubUrl(self.request.url))      
+
+    self.response.out.write('<br /><br /><a href="/search/term/Diyan Gochev\'s Birthday">Search term</a><a href="/search/id/13803817">Search ID</a>')
 
 ## TODO http://code.google.com/apis/calendar/data/1.0/developers_guide_python.html#AuthAuthSub
 
@@ -492,6 +544,41 @@ def render_error_feed(message):
   cal.add_component(entry)
     
   return cal.as_string()
+
+class search(webapp.RequestHandler):
+  def get(self, *ar):
+    search_type = ar[0]
+    term = ar[1]
+
+    facebook_id = '691580472'
+    email = 'kzar@kzar.co.uk'
+    facebook_token = 'xXxXxXxXxXx|fa9647df24f2f166ad5251e4-691580472|lugPxybzOCHh7aPKLPTycml5T9Y'
+
+    user, gcal = gcal_connect(facebook_id, email, 
+                        facebook_token, self.request.get("token"))
+
+    #calendar = find_calendar(gcal, user.bday_cal).content.src
+
+    #self.response.out.write(find_calendar(gcal, calendar))
+    calendar = user.bday_cal
+    
+
+#    calendar = 'http://www.google.com/calendar/feeds/kzar.co.uk_acjjm9cv73tupiof1id1vn2f6g%40group.calendar.google.com/private/full'
+    #self.response.out.write('Calendar: ' + calendar)
+
+    if search_type == 'term':
+      event = find_event(gcal, calendar, search_term=term)
+    elif search_type == 'id':
+      event = find_event(gcal, calendar, extended={'+fb_id+':term})
+
+    if event:
+      for ev in event:
+        self.response.out.write(str(ev.title.text) + 
+                                " [" + str(ev.extended_property[0].name) +
+                                ":" + str(ev.extended_property[0].value) + "]" +
+                                " " + str(len(ev.extended_property)) + '\n')
+    else:
+      self.response.out.write('None')
 
 class view_feed(webapp.RequestHandler):
   def get(self, *ar):
