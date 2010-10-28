@@ -4,11 +4,9 @@ from google.appengine.ext.webapp.util import run_wsgi_app
 
 application = webapp.WSGIApplication(
                                      [('/', views.MainPage),
-                                      ('/wishes', views.wishes),
                                       ('/gcal', views.gcal),
                                       ('/search/(.+)/(.+)', views.search),
-                                      ('/worker', views.worker),
-                                      (r'/feed/(.+)', views.view_feed)],
+                                      ('/worker', views.worker)],
                                      debug=True)
 
 def handleError(error):

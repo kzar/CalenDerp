@@ -88,6 +88,38 @@ class GraphAPI(object):
     def __init__(self, access_token=None):
         self.access_token = access_token
 
+    # PG ADDED
+    def follow(self, path):
+        """Provide this function with a path from paging"""
+    
+        file = urllib.urlopen(path)
+        try:
+            response = _parse_json(file.read())
+        finally:
+            file.close()
+            if response.get("error"):
+                raise GraphAPIError(response["error"]["type"],
+                                    response["error"]["message"])
+        return response
+        
+    def fql(self, query):
+        """Provide a way to do FQL queries"""
+    
+        query = urllib.quote(query)
+        path = ''.join(['https://api.facebook.com/method/fql.query?',
+                        'format=json&',
+                        'query=%(q)s&',
+                        'access_token=%(at)s'])
+        args = { "q" : query, "at" : self.access_token, }
+        file = urllib.urlopen(path % args)
+        try:
+            response = _parse_json(file.read())
+        except Exception, e:
+            raise e
+        finally:
+            file.close()
+        return response
+
     def get_object(self, id, **args):
         """Fetchs the given object from the graph."""
         return self.request(id, args)
