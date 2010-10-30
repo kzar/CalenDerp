@@ -635,7 +635,7 @@ class worker(webapp.RequestHandler):
     enqueue_tasks(future_tasks, token)
 
 class refresh(webapp.RequestHandler):
-  def post(self):
+  def get(self):
     logging.info("Refreshing everyone's calendars!")
     tasks = []
     users = Users.all()
@@ -643,6 +643,7 @@ class refresh(webapp.RequestHandler):
     # - test it actually works!
     # - Check if calendar exists before queing update
     # - If no calendars exist queue a user-purge event
+    # - If future date quota limit is on don't do it!
     for user in users:
       enqueue_tasks([{'type': 'update-events', 'calendar': user.event_cal},
                      {'type': 'update-birthdays', 'calendar': user.bday_cal}],
@@ -658,8 +659,13 @@ class MainPage(webapp.RequestHandler):
     # Grab the auth_token from facebook's canvas magic
     data = facebook.parse_signed_request(self.request.get("signed_request"),
                                          FACEBOOK_APP_SECRET)
-    facebook_id = data.get('user_id', None)
-    facebook_token = data.get('oauth_token', None)
+    if data:
+      facebook_id = data.get('user_id', None)
+      facebook_token = data.get('oauth_token', None)
+    else:
+      # Not on Facebook page, redirect them.
+      self.redirect("http://apps.facebook.com/calenderp/")
+      return
 
     # Let's see if they're authed        
     if facebook_token:
