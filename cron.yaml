@@ -1,0 +1,4 @@
+cron:
+ - description: Update calendars
+   url: /refresh
+   schedule: every 30 minutes

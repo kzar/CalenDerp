@@ -29,7 +29,6 @@ FACEBOOK_APP_ID = "xXxXxXxXxXx"
 FACEBOOK_APP_SECRET = "xXxXxXxXxXx"
 
 class Users(db.Model):
-  email = db.StringProperty(required=True)
   facebook_id = db.StringProperty(required=True)
   facebook_token = db.StringProperty(required=True)
   google_token = db.StringProperty(required=True)
@@ -166,7 +165,7 @@ def upgrade_google_token(token):
   calendar_service.UpgradeToSessionToken()
   return (calendar_service)
 
-def gcal_connect(facebook_id, email, facebook_token, token_param):
+def gcal_connect(facebook_id, facebook_token, token_param):
   """Firstly check the database for this user, see if they have a working
   token.
   
@@ -190,8 +189,7 @@ def gcal_connect(facebook_id, email, facebook_token, token_param):
 
     if calendar_service:
       # Record the token in our database
-      user = Users(email=email,
-                   facebook_id=facebook_id,
+      user = Users(facebook_id=facebook_id,
                    facebook_token=facebook_token,
                    google_token=calendar_service.GetAuthSubToken())
       user.put()
@@ -636,38 +634,48 @@ class worker(webapp.RequestHandler):
     # Enqueue any future tasks we need to deal with
     enqueue_tasks(future_tasks, token)
 
-## Cron Job code too refresh ...
-#select all users from datastore, loop through with this code:
-#    if gcal:
-#      if user.bday_cal:
-#        enqueue_tasks([{'type':'update-birthdays', 'calendar': user.bday_cal}],
-#                      user.google_token)
-#      if user.event_cal:
-#        enqueue_tasks([{'type':'update-events', 'calendar': user.event_cal}],
-#                      user.google_token)      
-#Now if both calendars don't exist delete the stuff from datstore
+class refresh(webapp.RequestHandler):
+  def post(self):
+    logging.info("Refreshing everyone's calendars!")
+    tasks = []
+    users = Users.all()
+    ## TODO
+    # - test it actually works!
+    # - Check if calendar exists before queing update
+    # - If no calendars exist queue a user-purge event
+    for user in users:
+      enqueue_tasks([{'type': 'update-events', 'calendar': user.event_cal},
+                     {'type': 'update-birthdays', 'calendar': user.bday_cal}],
+                    user.google_token)
+
+      user, gcal = gcal_connect(facebook_id, facebook_token, 
+                                self.request.get("token"))
     
 class MainPage(webapp.RequestHandler):
   def get(self):
+    redirect_uri = "http://apps.facebook.com/calenderp/"
+
     # Grab the auth_token from facebook's canvas magic
-    fb_token = facebook.oauth_token(self.request.get("signed_request"), FACEBOOK_APP_SECRET)
+    data = facebook.parse_signed_request(self.request.get("signed_request"),
+                                         FACEBOOK_APP_SECRET)
+    facebook_id = data.get('user_id', None)
+    facebook_token = data.get('oauth_token', None)
 
     # Let's see if they're authed        
-    if fb_token:
+    if facebook_token:
       # Right now let's see if they're authed with Google Calendar
-      user, gcal = gcal_connect(facebook_id, email, 
-                                facebook_token, self.request.get("token"))
+      user, gcal = gcal_connect(facebook_id, facebook_token, 
+                                self.request.get("token"))
       if gcal:
         # Great they are
         args = {'google_status': 'Connected to Google'}
         page = 'show_status.html'
       else:
         # No dice, display the connect button
-        args = {'login_link': GetAuthSubUrl(self.request.url)}
+        args = {'login_link': GetAuthSubUrl(redirect_uri)}
         page = 'google_login.html'
     else:
       # No dice, show them the install button and some convincing copy..
-      redirect_uri = "http://apps.facebook.com/calenderp/"
       scope = "offline_access,friends_birthday,user_events"
       args = {'install_link': facebook.oauth_URL(client_id=FACEBOOK_APP_ID, 
                                                  redirect_uri=redirect_uri,
