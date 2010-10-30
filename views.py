@@ -6,7 +6,7 @@ from google.appengine.ext import db
 from google.appengine.ext.webapp import template
 from google.appengine.api.urlfetch import DownloadError
 from django.utils import simplejson as json
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 # Stuff for Google calendar
@@ -37,6 +37,36 @@ class Users(db.Model):
   event_cal = db.LinkProperty()
   events = db.TextProperty()
   birthdays = db.TextProperty()
+
+class Flags(db.Model):
+  flag_key = db.StringProperty(required=True)
+  value = db.StringProperty(required=True)
+
+def handle_google_error(err):
+  """Take a Google error and return a lists of tasks to carry out based on
+  it. Just a shell for now but could be useful in the future."""
+  logging.info("Google error: " + str(err))
+  if 'quota' in str(err):
+    delay_tasks()
+  return []
+
+def set_flag(key, value):
+  """Set a flag in the datastore's value."""
+  flag = Flags.all().filter("flag_key =", key).get()
+  if flag:
+    # Flag already exists, update it
+    flag.value = value
+  else:
+    # Flag doesn't exist, create it
+    flag = Flags(flag_key=key, value=value)
+  # Great we're done, save it
+  flag.put()
+
+def get_flag(key):
+  """Get a flag's value from the datastore."""
+  flag = Flags.all().filter("flag_key =", key).get()
+  if flag:
+    return flag.value
 
 def valid_birthday(day, month):
   """Take a day + month and make sure it's a valid date."""
@@ -72,6 +102,39 @@ def grab_birthdays(user):
                       'pic': friend['picture'], 
                       'day': day,
                       'month': month})
+    except TypeError:
+      pass
+  return results
+
+def parse_date(date):
+  """Takes an ISO date string, parses it and returns a datetime object."""
+  try:
+    return datetime(*map(int, re.split('[^\d]', date)[:-1]))
+  except:
+    return None
+
+def grab_events(user):
+  """Take a user and return a list of their events."""
+  # I'm deliberately keeping this simple for now
+  # (Does not return past events, only returns
+  # events they are attending, is limited to one page of results.)
+  graph = facebook.GraphAPI(user.facebook_token)
+  
+  fields = "name,id,location,start_time,end_time,description"
+  events = graph.get_object("me/events/attending", fields=fields)
+
+  today = datetime.today()
+  #today = datetime(2009,5,1)
+  results = []
+  for event in events['data']:
+    try: 
+      if parse_date(result['end_time']) > today:
+        results.append({'name': event['title'],
+                        'content': event['description'],
+                        'start': event['start_time'],
+                        'end': event['end_time'],
+                        'id': event['id'],
+                        'location': event['location']})
     except TypeError:
       pass
   return results
@@ -177,7 +240,7 @@ def any_changes(new, old):
       return True
   return False
 
-def birthday_event_task(birthday, task_type, calendar):
+def format_birthdaytask(birthday, task_type, calendar):
   """Helpful function to take a birthday and return a task ready to be
   put in the task queue."""
   # Get everything ready
@@ -193,53 +256,40 @@ def birthday_event_task(birthday, task_type, calendar):
           'start': start, 'end': end, 'picture': birthday['pic'],
           'fb_id': birthday['id'], 'calendar': calendar, 'repeat': 'YEARLY'}
 
-def diff_birthdays(new_bdays, old_birthdays, calendar):
-  """Take a list of new and old birthdays and return a list of changes to make.
-"""
-  # Create the updates list, this will contain tasks for any birthday
-  # changes that need to be carried out. 
-  updates = []
-
-  # Check for deleted birthdays
-  new_bday_ids = [b['id'] for b in new_bdays]
-  for birthday in old_birthdays:
-    if not list_contains(birthday['id'], new_bday_ids):
-      # Delete entry
-      updates.append(birthday_event_task(birthday, 'remove-event', calendar))
-  # Kludge the old bdays into a dict so we can look up by the id more easily  
-  old_bdays = {}
-  for birthday in old_birthdays:
-    old_bdays[birthday['id']] = birthday
-
-  # Check for inserts and updates
-  for birthday in new_bdays:
-    if not old_bdays.has_key(birthday['id']):
-      # New entry
-      updates.append(birthday_event_task(birthday, 'insert-event', calendar))
-    else:
-      # Check for any differences
-      if any_changes(birthday, old_bdays[birthday['id']]):
-        updates.append(birthday_event_task(birthday, 'update-event', calendar))
-    
-  return updates
+def format_eventtask(event, task_type, calendar):
+  """Helpful function to take an event and return a task ready to be
+  put in the task queue."""
+  return {'type': task_type, 'title': event['name'], 
+          'calendar': calendar, 'content': event['content'],
+          'start': event['start'], 'end': event['end'], 
+          'fb_id': event['id'], 'location': event['location']}
 
 def enqueue_tasks(updates, token, chunk_size=10):
   """Take a list of updates and add them to the Task Queue."""
+  # Makes sure the task queue really does wait if we're outa quota
+  run_date = parse_date(get_flag('next-task-run-date'))
+  if run_date and run_date > datetime.today():
+    eta = run_date
+  else:
+    eta = None
+
+  # Now add those tasks :)
   for i in range(0, len(updates), chunk_size):
     taskqueue.add(url='/worker',
                   params={'tasks': json.dumps(updates[i:i+chunk_size]),
-                          'token': token})
+                          'token': token},
+                  eta=eta)
 
-def create_event(title, content, start, end, 
-                 repeat_freq=None, fb_id=None, pic=None):
+def create_event(title, content, start, end, location=None, repeat_freq=None,
+                 fb_id=None, pic=None):
   """Create a new event based on the given parameters and return it."""
   event = gdata.calendar.CalendarEventEntry()
-  event = populate_event(event, title, content, start, end, 
+  event = populate_event(event, title, content, start, end, location=location,
                          repeat_freq=repeat_freq, fb_id=fb_id, pic=pic)
   return event
 
 def populate_event(event, title, content, start, end, 
-                   repeat_freq=None, fb_id=None, pic=None):
+                   repeat_freq=None, fb_id=None, pic=None, location=None):
   """Take an event, populate it with all the information and then return it."""
   # For repeat it's start.strftime('%Y%m%d')
   # for single it's start.strftime('%Y-%m-%dT%H:%M:%S.000Z')
@@ -268,6 +318,10 @@ def populate_event(event, title, content, start, end,
                                                      href=pic, 
                                                      link_type="image/jpeg")
     event.link = [web_content_link]
+
+  if location:
+    # Add the location
+    event.where = [gdata.calendar.Where(value_string=location)]
 
   # Finish up and return
   event.title = atom.Title(text=content)
@@ -301,7 +355,7 @@ def find_event(gcal, calendar, search_term=None, extended=None):
   # Run the search
   try: 
     results = gcal.CalendarQuery(query).entry
-  except (DownloadError, RequestError), e:
+  except (DownloadError, RequestError), err:
     # Error running the search, retry
     logging.error('Received error when searching, retrying.')
     return [], True
@@ -320,33 +374,111 @@ def handle_newuser_event(task, gcal, token):
            'desc': 'Facebook friend birthdays', 'datastore': 'bday_cal'},
           {'type': 'insert-calendar', 'name': 'Events',
            'desc': 'Facebook events', 'datastore': 'event_cal'},
+          {'type': 'update-events'},
           {'type': 'update-birthdays'}]
 
+def diff_data(new_data, old_data, calendar, format_task_function):
+  """Take a list of new and old data, check for differences and return
+  a list of tasks needed to be performed to bring things up to date."""
+  # Python requires we set this up in advance
+  tasks = []
+
+  # No past data, add it all and return
+  if not old_data:
+    for entry in new_data:
+      tasks.append(format_task_function(entry, 'insert-event', calendar))
+    return tasks
+
+  # No existing data, query probably failed, skip
+  if not new_data:
+    return []
+
+  # Check for deleted data
+  new_data_ids = [b['id'] for b in new_data]
+  for old_entry in old_data:
+    if not list_contains(old_entry['id'], new_data_ids):
+      # Delete entry
+      tasks.append(format_task_function(old_entry, 'remove-event', calendar))
+
+  # Make a dict out of the old data so we can look records up quickly
+  old_data_dict = {}
+  for entry in old_data:
+    old_data_dict[entry['id']] = entry
+
+  # Check for inserts and tasks
+  for new_entry in new_entry:
+    if not old_data_dict.has_key(new_entry['id']):
+      # New entry
+      tasks.append(format_task_function(new_entry, 'insert-event', calendar))
+    else:
+      # Check for any differences
+      if any_changes(new_entry, old_data_dict[new_entry['id']]):
+        tasks.append(format_task_function(new_entry, 'update-event', calendar))
+    
+  return tasks
+
+def update_data(google_token, grab_function, format_function, 
+                datastore_key, calendar):
+  """Take all the details needed to update a user's data. This is kept generic
+  so we can use it to update both birthdays and events. Return a list of tasks
+  that need to be carried out to perform the update."""
+  # Find the user in the database
+  user = Users.all().filter("google_token =", google_token)[0]
+
+  # Grab the data from Facebook
+  data = grab_function(user)
+  old_data = getattr(user,datastore_key)
+  
+  logging.info('AHH' + str(data) + 'wahh' + str(old_data))
+
+  # Check for changes
+  changes = diff_data(data, old_data, calendar, format_function)
+  
+  if changes:
+    # Record their new data in the datastore
+    logging.info('We found ' + str(len(changes)) + ' to make. Adding tasks')
+    setattr(user, datastore_key, json.dumps(data))
+    user.put()
+  # We're done, give them the list of changes
+  return changes
+
+def grab_one_user_field(google_token, datastore_key):
+  """Quick little helper function, look up a user by their token and return
+  the contents of the given key for that user."""
+  user = Users.all().filter("google_token =", google_token)[0]
+  return getattr(user, datastore_key)
+
+def handle_updateevents(task, gcal, token):
+  """This updates the user's events. It grabs the latest events, checks for 
+  anything new and returns a list of tasks to make the needed changes."""
+  logging.info('Checking for events to update')
+  # If the calendar hasn't been given look it up
+  calendar = task.get('calendar', grab_one_user_field(token, 'event_cal'))
+  # Don't freak out if there's no calendar
+  if not calendar:
+    logging.info("No event calendar yet, retry later.")
+    return [task]
+  # Great now return the results
+  return update_data(token, grab_events, format_eventtask, 
+                     'events', calendar)
+  
 def handle_updatebirthdays(task, gcal, token):
   """This event updates the users birthdays. It returns a list of tasks needed
   to be completed to bring the user's birthday calendar up to date."""
-  # Find the user in the database
-  user = Users.all().filter("google_token =", token)[0]
+  logging.info('Checking for birthdays to update')
+  # If the calendar hasn't been given look it up
+  calendar = task.get('calendar', grab_one_user_field(token, 'bday_cal'))
+  
+  if not calendar:
+    logging.info("No birthday calendar yet, retry later.")
+    return [task]
 
-  # Grab all the birthdays and figure out what's new
-  birthdays = grab_birthdays(user)
-  try:
-    past_birthdays = json.loads(user.birthdays)
-  except:
-    past_birthdays = []
+  # FIXME - check the birthday calendar exists! 
+  # (not "" and valid and returns 200)
 
-  # Grab a list of tasks for all the changes we need to make
-  changes = diff_birthdays(birthdays, past_birthdays, user.bday_cal)
-
-  if changes:
-    logging.info('We found ' + str(len(changes)) + ' to make. Adding tasks')
-    # Update our database
-    user.birthdays = json.dumps(birthdays)
-    user.put()
-  else:
-    logging.info('No changes to make.')
-
-  return changes  
+  # Great now return the results
+  return update_data(token, grab_birthdays, format_birthdaytask, 
+                     'birthdays', calendar)
 
 def handle_insert_event(task, gcal, token):
   """Take an insert event task and deal with it. Return a list of tasks to
@@ -354,13 +486,12 @@ def handle_insert_event(task, gcal, token):
   logging.info("Adding event " + task['title'])
   try:
     event = create_event(task['title'], task['content'], task['start'],
-                         task['end'], task['repeat'], task['fb_id'], 
-                         task['picture'])
+                         task['end'], repeat_freq=task['repeat'], 
+                         fb_id=task['fb_id'], pic=task['picture'])
     gcal.InsertEvent(event, task['calendar'])
   except (DownloadError, RequestError), err:
-    logging.info("Couldn't add event, " + task['title'] + "retrying.")
-    logging.debug("Download error: " + str(err))
-    return [task]
+    logging.info("Couldn't add event, " + task['title'] + " retrying.")
+    return handle_google_error(err) + [task]
   else:
     return []
   
@@ -380,13 +511,14 @@ def handle_update_event(task, gcal, token):
       logging.info("Updating event " + str(event.title.text))
       edit_link = event.GetEditLink().href
       event = populate_event(event, task['title'], task['content'], 
-                             task['start'], task['end'], task['repeat'],
-                             task['fb_id'], task['picture'])
+                             task['start'], task['end'], 
+                             repeat_freq=task['repeat'],
+                             fb_id=task['fb_id'], pic=task['picture'])
       try:
         gcal.UpdateEvent(edit_link, event)
-      except (DownloadError, RequestError):
+      except (DownloadError, RequestError), err:
         logging.error("Couldn't update event, " + task['title'] + "retrying.")
-        return [task]
+        return handle_google_error(err) + [task]
   else:
     logging.error("Couldn't find event to update:" + task['fb_id'])
   return []
@@ -410,10 +542,18 @@ def handle_remove_event(task, gcal, token):
         calendar_service.DeleteEvent(event.GetEditLink().href)  
       except DownloadError:
         logging.error("Couldn't delete event, " + task['title'] + "retrying.")
-        return [task]
+        return handle_google_error + [task]
   else:
     logging.error("Couldn't find event to delete:" + task['id'])
   return []
+
+def delay_tasks(message="hoooooooooooooolllllld-up! brap brap"):
+  """When we receive a 'quota depleated' error we need to put everything on
+  hold. For now we just stall by 1 day, maybe we will make this smarter in
+  the future?"""
+  logging.info(message)
+  tomorrow = datetime.today() + timedelta(days=1)
+  set_flag('next-task-run-date', tomorrow.strftime('%Y-%m-%dT%H:%M:%S.000Z'))
 
 def handle_insert_calendar(task, gcal, token):
   """Take an insert calendar task and deal with it. Return a list of tasks to
@@ -423,9 +563,15 @@ def handle_insert_calendar(task, gcal, token):
 
   try:
     new_cal = create_calendar(gcal, task['name'], task['desc'])
-  except (RequestError, DownloadError):
-    logging.error("Couldn't add calendar " + task['name'] + " going to retry.")
-    return [task]
+  except (RequestError, DownloadError), err:
+    return handle_google_error(err) + [task]
+    if 'quota' in str(err):
+      delay_tasks()
+      return [task]
+    else:
+      # Looks ok, let's just retry
+      logging.error("Couldn't add calendar " + task['name'] + " going to retry.")
+      return [task]
   else:
     # Record the calendar in the user's datastore
     datastore = task.get('datastore', None)
@@ -457,6 +603,13 @@ class worker(webapp.RequestHandler):
     tasks = json.loads(self.request.get("tasks"))
     token = self.request.get("token")
 
+    # Check we can run now, if this date is in the future it means our
+    # quota is used up or something else has happened requiring us to wait.
+    run_date = parse_date(get_flag('next-task-run-date'))
+    if run_date and run_date > datetime.today():
+      enqueue_tasks(tasks, token)
+      return
+
     # Connect to Google calendar
     gcal = check_google_token(token)
     
@@ -472,94 +625,55 @@ class worker(webapp.RequestHandler):
                 'update-event': 'handle_update_event',
                 'remove-event': 'handle_remove_event',
                 'new-user': 'handle_newuser_event',
-                'update-birthdays': 'handle_updatebirthdays'}
+                'update-birthdays': 'handle_updatebirthdays',
+                'update-events': 'handle_updateevents'}
 
     # Deal with the tasks
     for task in tasks:
       handler = globals()[handlers.get(task['type'], 'handle_unknown_task')]
       future_tasks.extend(handler(task, gcal, token))
 
-    # FIXME
-    # Newly returned tasks should be pushed infront of existing ones
-    # in the queue, older ones should really be queued up again to 
-    # prevent problems. Also we shouldn't need to specify the calendar.
-    
     # Enqueue any future tasks we need to deal with
     enqueue_tasks(future_tasks, token)
 
-class gcal(webapp.RequestHandler):
-  def get(self):
-    # Set my userid for now
-    facebook_id = '691580472'
-    email = 'kzar@kzar.co.uk'
-    facebook_token = 'xXxXxXxXxXx|fa9647df24f2f166ad5251e4-691580472|lugPxybzOCHh7aPKLPTycml5T9Y'
-
-    user, gcal = gcal_connect(facebook_id, email, 
-                        facebook_token, self.request.get("token"))
-  
-    if gcal:
-      if user.bday_cal:
-        enqueue_tasks([{'type':'update-birthdays'}], user.google_token)
-      if user.event_cal:
-        enqueue_tasks([{'type':'update-events'}], user.google_token)      
-      self.response.out.write('<p>Connected to Google calendars.. </p>')
-    else:
-      self.response.out.write('<a href="%s">Login to your Google account</a>' % 
-                              GetAuthSubUrl(self.request.url))      
-
-    self.response.out.write('<br /><br /><a href="/search/term/Diyan Gochev\'s Birthday">Search term</a><a href="/search/id/13803817">Search ID</a>')
+## Cron Job code too refresh ...
+#select all users from datastore, loop through with this code:
+#    if gcal:
+#      if user.bday_cal:
+#        enqueue_tasks([{'type':'update-birthdays', 'calendar': user.bday_cal}],
+#                      user.google_token)
+#      if user.event_cal:
+#        enqueue_tasks([{'type':'update-events', 'calendar': user.event_cal}],
+#                      user.google_token)      
+#Now if both calendars don't exist delete the stuff from datstore
     
 class MainPage(webapp.RequestHandler):
   def get(self):
     # Grab the auth_token from facebook's canvas magic
-    token = facebook.oauth_token(self.request.get("signed_request"), FACEBOOK_APP_SECRET)
+    fb_token = facebook.oauth_token(self.request.get("signed_request"), FACEBOOK_APP_SECRET)
 
     # Let's see if they're authed        
-    if token:
-      # They are authed, grab their details and render settings page
-      graph = facebook.GraphAPI(token)
-      me = graph.get_object("me", type="large", fields="id,name,picture,birthday")
-      args = {'me': me, 'feed': gimme_my_feeds(me['id'], token)}
-      page = 'settings.html'
+    if fb_token:
+      # Right now let's see if they're authed with Google Calendar
+      user, gcal = gcal_connect(facebook_id, email, 
+                                facebook_token, self.request.get("token"))
+      if gcal:
+        # Great they are
+        args = {'google_status': 'Connected to Google'}
+        page = 'show_status.html'
+      else:
+        # No dice, display the connect button
+        args = {'login_link': GetAuthSubUrl(self.request.url)}
+        page = 'google_login.html'
     else:
       # No dice, show them the install button and some convincing copy..
+      redirect_uri = "http://apps.facebook.com/calenderp/"
+      scope = "offline_access,friends_birthday,user_events"
       args = {'install_link': facebook.oauth_URL(client_id=FACEBOOK_APP_ID, 
-                                                 redirect_uri="http://apps.facebook.com/calenderp/",
-                                                 display="page", scope="offline_access,friends_birthday")}
+                                                 redirect_uri=redirect_uri,
+                                                 display="page", scope=scope)}
       page = 'install.html' 
-
-      # Render the page :)
-      path = os.path.join(os.path.dirname(__file__), page);
-      self.response.out.write(template.render(path, args))
-
-class search(webapp.RequestHandler):
-  def get(self, *ar):
-    search_type = ar[0]
-    term = ar[1]
-
-    facebook_id = '691580472'
-    email = 'kzar@kzar.co.uk'
-    facebook_token = 'xXxXxXxXxXx|fa9647df24f2f166ad5251e4-691580472|lugPxybzOCHh7aPKLPTycml5T9Y'
-
-    user, gcal = gcal_connect(facebook_id, email, 
-                        facebook_token, self.request.get("token"))
-
-    calendar = user.bday_cal
     
-    if search_type == 'term':
-      events, search_failed  = find_event(gcal, calendar, search_term=term)
-    elif search_type == 'id':
-      events, search_failed  = find_event(gcal, calendar, 
-                                          extended={'+fb_id+':term})
-
-    if search_failed:
-      self.response.out.write('<b>The search failed, refresh page!</b>')
-
-    if events:
-      for event in events:
-        self.response.out.write(str(event.title.text) + 
-                                " [" + str(event.extended_property[0].name) +
-                                ":" + str(event.extended_property[0].value) + "]" +
-                                " " + str(len(event.extended_property)) + '\n')
-    else:
-      self.response.out.write('<b>No matches</b>')
+    # Either way render the page :)
+    path = os.path.join(os.path.dirname(__file__), page);
+    self.response.out.write(template.render(path, args))
