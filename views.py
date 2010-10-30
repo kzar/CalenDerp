@@ -425,7 +425,7 @@ def update_data(google_token, grab_function, format_function,
 
   # Grab the data from Facebook
   data = grab_function(user)
-  old_data = getattr(user,datastore_key)
+  old_data = json.loads(getattr(user,datastore_key))
   
   logging.info('AHH' + str(data) + 'wahh' + str(old_data))
 
