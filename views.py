@@ -46,7 +46,9 @@ class MainPage(webapp.RequestHandler):
   def get(self):
     # Check if we are connected with Facebook and Google
     signed_request = self.request.get("signed_request")
-    connection_status = calenderp.user_connection_status(signed_request)
+    google_token = self.request.get("token", None)
+    connection_status = calenderp.user_connection_status(signed_request,
+                                                         google_token)
 
     # Facebook app is installed
     if connection_status['facebook'] == True:
@@ -56,7 +58,7 @@ class MainPage(webapp.RequestHandler):
         page = 'show_status.html'
       # Not connected to Google Calendar yet
       else:
-        args = {'login_link': GetAuthSubUrl(config.FACEBOOK_APP_URL)}
+        args = {'login_link': calenderp.GetAuthSubUrl(config.FACEBOOK_APP_URL)}
         page = 'google_login.html'
     # Facebook app isn't installed yet
     else:

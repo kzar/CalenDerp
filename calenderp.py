@@ -691,7 +691,7 @@ def handle_unknown_task(task, gcal, token):
   logging.info('Unknown task type "' + task['type'] + '"')
   return []
 
-def user_connection_status(signed_request):
+def user_connection_status(signed_request, google_token):
   # Init the variables
   fb_con = False
   google_con = False
@@ -707,10 +707,9 @@ def user_connection_status(signed_request):
     if facebook_token:
       fb_con = True
       # Grab the Google connection details
-      user, gcal = gcal_connect(facebook_id, facebook_token, 
-                                self.request.get("token"))
+      user, gcal = gcal_connect(facebook_id, facebook_token, google_token)
       # Make sure the Facebook token is up to date
-      if facebook_token != user.facebook_token:
+      if user and facebook_token != user.facebook_token:
         user.facebook_token = facebook_token
         user.put()
       # Now see if the user is authed with Google calendar
