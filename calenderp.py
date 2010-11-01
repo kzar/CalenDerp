@@ -707,8 +707,8 @@ def user_connection_status(signed_request):
     if facebook_token:
       fb_con = True
       # Grab the Google connection details
-      user, gcal = calenderp.gcal_connect(facebook_id, facebook_token, 
-                                          self.request.get("token"))
+      user, gcal = gcal_connect(facebook_id, facebook_token, 
+                                self.request.get("token"))
       # Make sure the Facebook token is up to date
       if facebook_token != user.facebook_token:
         user.facebook_token = facebook_token
