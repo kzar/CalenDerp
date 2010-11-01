@@ -549,8 +549,8 @@ def handle_remove_event(task, gcal, token):
   return []
 
 def refresh_everyones_calendars():
-"""This function is used by the /refresh view to refresh everyone's calendars.
-It loops through each user and adds refresh tasks to the task queue."""
+  """This function is used by the /refresh view to refresh everyone's calendars.
+  It loops through each user and adds refresh tasks to the task queue."""
   tasks = []
   users = Users.all()
   ## TODO
@@ -568,8 +568,8 @@ It loops through each user and adds refresh tasks to the task queue."""
 
 
 def handle_tasks(tasks, token):
-"""This function is used by the /worker view to actually do all the work given
-in the task queue."""
+  """This function is used by the /worker view to actually do all the work given
+  in the task queue."""
   # Connect to Google calendar
   gcal = check_google_token(token)
   
