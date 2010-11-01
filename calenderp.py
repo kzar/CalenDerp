@@ -3,9 +3,11 @@ from google.appengine.api import users, urlfetch
 from google.appengine.api.labs import taskqueue
 from google.appengine.ext import db
 from google.appengine.api.urlfetch import DownloadError
+from google.appengine.runtime import apiproxy_errors
 from django.utils import simplejson as json
 from datetime import datetime, timedelta
 from uuid import uuid4
+from facebook import GraphAPIError
 
 # Stuff for Google calendar
 sys.path.insert(0, 'gdata.zip/gdata')
@@ -156,6 +158,9 @@ def check_google_token(token):
   try:
     calendar_service.AuthSubTokenInfo()
   except NonAuthSubToken:
+    return None
+  except apiproxy_errors.OverQuotaError:
+    delay_tasks()
     return None
   else:
     return calendar_service
@@ -427,7 +432,16 @@ def update_data(google_token, grab_function, format_function,
   user = Users.all().filter("google_token =", google_token)[0]
 
   # Grab the data from Facebook
-  data = grab_function(user)
+  try:
+    data = grab_function(user)
+  except GraphAPIError, err:
+    if 'access token' in str(err):        
+      logging.info('User\'s Facebook token expired, deleting them.')
+      return [{'type': 'delete-user'}]
+    else:
+      logging.info('Some error doing Facebook query:' + str(err))
+      return []
+
   old_data = getattr(user,datastore_key)
   if old_data:
     old_data = json.loads(old_data)    
@@ -487,12 +501,18 @@ def handle_insert_event(task, gcal, token):
   logging.info("Adding event " + task['title'])
   try:
     event = create_event(task['title'], task['content'], task['start'],
-                         task['end'], repeat_freq=task['repeat'], 
-                         fb_id=task['fb_id'], pic=task['picture'])
+                         task['end'], fb_id=task['fb_id'], 
+                         pic=task.get('picture', None),
+                         repeat_freq=task.get('repeat', None),
+                         location=task.get('location', None))
     gcal.InsertEvent(event, task['calendar'])
   except (DownloadError, RequestError), err:
     logging.info("Couldn't add event, " + task['title'] + " retrying.")
     return handle_google_error(err) + [task]
+  except apiproxy_errors.OverQuotaError:
+    logging.info('Couldn\'t add event, over quota :(')
+    delay_tasks()
+    return []
   else:
     return []
   
@@ -511,10 +531,12 @@ def handle_update_event(task, gcal, token):
     for event in events:
       logging.info("Updating event " + str(event.title.text))
       edit_link = event.GetEditLink().href
+
       event = populate_event(event, task['title'], task['content'], 
-                             task['start'], task['end'], 
-                             repeat_freq=task['repeat'],
-                             fb_id=task['fb_id'], pic=task['picture'])
+                             task['start'], task['end'], fb_id=task['fb_id'], 
+                             pic=task.get('picture', None),
+                             repeat_freq=task.get('repeat', None),
+                             location=task.get('location', None))
       try:
         gcal.UpdateEvent(edit_link, event)
       except (DownloadError, RequestError), err:
@@ -563,16 +585,16 @@ def refresh_everyones_calendars():
                    {'type': 'update-birthdays', 'calendar': user.bday_cal}],
                   user.google_token)
 
-    user, gcal = gcal_connect(facebook_id, facebook_token, 
-                              self.request.get("token"))
-
-
 def handle_tasks(tasks, token):
   """This function is used by the /worker view to actually do all the work given
   in the task queue."""
   # Connect to Google calendar
   gcal = check_google_token(token)
-  
+  if not gcal:
+      # Probably because we're out of quota for the URL fetch so just enqueue
+      enqueue_tasks(tasks, token)
+      return
+
   # Future tasks is a list of new tasks to enqueue, 
   # generated while we have been dealing with the current tasks
   future_tasks = []
@@ -586,7 +608,8 @@ def handle_tasks(tasks, token):
               'remove-event': 'handle_remove_event',
               'new-user': 'handle_newuser_event',
               'update-birthdays': 'handle_updatebirthdays',
-              'update-events': 'handle_updateevents'}
+              'update-events': 'handle_updateevents',
+              'delete-user': 'handle_delete_user'}
 
   # Deal with the tasks
   for task in tasks:
@@ -595,6 +618,14 @@ def handle_tasks(tasks, token):
 
   # Enqueue any future tasks we need to deal with
   enqueue_tasks(future_tasks, token)
+
+def handle_delete_user(task, gcal, token):
+  """Take a delete-user task and deal with it. Just delete the user and return
+  a empty list."""
+  users = Users.all().filter("google_token =", token)
+  for user in users:
+      user.delete()
+  return []
 
 def delay_tasks(message="hoooooooooooooolllllld-up! brap brap"):
   """When we receive a 'quota depleated' error we need to put everything on
@@ -663,6 +694,11 @@ def user_connection_status(signed_request):
       # Grab the Google connection details
       user, gcal = calenderp.gcal_connect(facebook_id, facebook_token, 
                                           self.request.get("token"))
+      # Make sure the Facebook token is up to date
+      if facebook_token != user.facebook_token:
+        user.facebook_token = facebook_token
+        user.put()
+      # Now see if the user is authed with Google calendar
       if gcal:
         google_con = True
         status = 'Connected to Google'
