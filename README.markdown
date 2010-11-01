@@ -9,6 +9,8 @@ It's a work in progress, there are a lot of things I want to change but it's sta
 
 It works using a combination of Google's appengine, Google Calendar API, Facebook's Graph API and Python. Once you are authed with both Facebook and Google, CalenDerp queues up all the work in the task queue and syncs your calendars. Once every 30 mins the calendars are refreshed using a cronjob.
 
+Anyway give it a try: <http://apps.facebook.com/calenderp/>
+
 Todo
 ----
  - Check for Facebook permisions properly, make sure we have the exact ones needed
