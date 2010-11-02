@@ -13,15 +13,14 @@ Anyway give it a try: <http://apps.facebook.com/calenderp/>
 
 Todo
 ----
- - Check for Facebook permisions properly, make sure we have the exact ones needed
+ - Sort out error handling for Google calendar / Facebook queries. Make it
+   consistent and centralised somehow. 
+ - Start passing the user object to handler functions if it's avaliable.
  - Check for Calendars properly, re-create them if not there.
  - Process requests to the Google Calendar API in batches, hopefully keeping us within quotas.
- - Add status attribute to users and have it being updated and displayed. Give the users a proper idea of what's happening.
- - When we're out of quota display a message to the users, explain the delay.
- - Revoke oAuth token before deleting users.
  - Make status page a lot clearer, explain what's happening better.
- - Re-organise files, prune stuff that's not needed and seperate the templates
-   from Python code.
+ - Re-organise files, seperate the templates from the Python code.
+ - Update user's status when doing the various tasks.
 
 License
 -------

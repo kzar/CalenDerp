@@ -48,8 +48,8 @@ class MainPage(webapp.RequestHandler):
     signed_request = self.request.get("signed_request")
     google_token = self.request.get("token", None)
     connection_status = calenderp.user_connection_status(signed_request,
-                                                         google_token)
-
+                                                         google_token,
+                                                         config.FACEBOOK_SCOPE)
     # Facebook app is installed
     if connection_status['facebook'] == True:
       # Connected to Google Calendar
@@ -62,10 +62,10 @@ class MainPage(webapp.RequestHandler):
         page = 'google_login.html'
     # Facebook app isn't installed yet
     else:
-      scope = "offline_access,friends_birthday,user_events"
       install_link = facebook.oauth_URL(client_id=config.FACEBOOK_APP_ID, 
                                         redirect_uri=config.FACEBOOK_APP_URL,
-                                        display="page", scope=scope)
+                                        scope=",".join(config.FACEBOOK_SCOPE),
+                                        display="page")
       args = {'install_link': install_link}
       page = 'install.html' 
     # Either way render the page :)

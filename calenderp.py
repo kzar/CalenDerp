@@ -42,12 +42,13 @@ import time
 
 class Users(db.Model):
   facebook_id = db.StringProperty(required=True)
-  facebook_token = db.StringProperty(required=True)
-  google_token = db.StringProperty(required=True)
+  facebook_token = db.StringProperty()
+  google_token = db.StringProperty()
   bday_cal = db.LinkProperty()
   event_cal = db.LinkProperty()
   events = db.TextProperty()
   birthdays = db.TextProperty()
+  status = db.StringProperty(required=True)
 
 class Flags(db.Model):
   flag_key = db.StringProperty(required=True)
@@ -83,7 +84,7 @@ def we_gotta_wait():
   """Return True if the next-task-run-date is in the future. False otherwise."""
   run_date = parse_date(get_flag('next-task-run-date'))
   if run_date and run_date > datetime.today():
-    return True
+    return run_date
   else:
     return False
 
@@ -187,41 +188,6 @@ def upgrade_google_token(token):
   calendar_service.SetAuthSubToken(token)
   calendar_service.UpgradeToSessionToken()
   return (calendar_service)
-
-def gcal_connect(facebook_id, facebook_token, token_param):
-  """Firstly check the database for this user, see if they have a working
-  token.
-  
-  If not check the token parameter, upgrade that to a nice session token
-  and store it in the database.
-
-  Return the user and calendar object or None if there are no working tokens."""
-  # First check the database
-  user = Users.all().filter("facebook_id =", facebook_id)
-  if user.count():
-    # Already registered, make sure token is valid
-    calendar_service = check_google_token(user[0].google_token)
-    
-    if calendar_service:
-      # Great we're done
-      return user[0], calendar_service
-    
-  # No joy? Let's check the parameter
-  if token_param:
-    calendar_service = upgrade_google_token(token_param)
-
-    if calendar_service:
-      # Record the token in our database
-      user = Users(facebook_id=facebook_id,
-                   facebook_token=facebook_token,
-                   google_token=calendar_service.GetAuthSubToken())
-      user.put()
-
-      # Setup the new user's calendars
-      enqueue_tasks([{'type': 'new-user'}], user.google_token)
-      return user, calendar_service
-  # Saves us a job later
-  return None, None
 
 def create_calendar(gcal, title, summary):
   """Simple wrapper to create a new Goolge Calendar."""
@@ -446,13 +412,20 @@ def update_data(google_token, grab_function, format_function,
   # Find the user in the database
   user = Users.all().filter("google_token =", google_token)[0]
 
+  # Make sure there's a Facebook token!
+  if not user.facebook_token:
+    return []
+
   # Grab the data from Facebook
   try:
     data = grab_function(user)
   except GraphAPIError, err:
-    if 'access token' in str(err):        
-      logging.info('User\'s Facebook token expired, deleting them.')
-      return [{'type': 'delete-user'}]
+    if 'access token' in str(err): 
+      logging.info('User\'s Facebook token expired, clearing it.')
+      user.facebook_token = ""
+      user.status = "Facebook connection broken."
+      user.put()
+      return []
     else:
       logging.info('Some error doing Facebook query:' + str(err))
       return []
@@ -478,16 +451,25 @@ def grab_one_user_field(google_token, datastore_key):
   user = Users.all().filter("google_token =", google_token)[0]
   return getattr(user, datastore_key)
 
+def lookup_calendar(calendar):
+  if calendar:
+    ## FIXME
+    # Write some code here that checks that the calendar really exists
+    # and if not somehow try and find it or create it.
+    return calendar
+
 def handle_updateevents(task, gcal, token):
   """This updates the user's events. It grabs the latest events, checks for 
   anything new and returns a list of tasks to make the needed changes."""
   logging.info('Checking for events to update')
   # If the calendar hasn't been given look it up
   calendar = task.get('calendar', grab_one_user_field(token, 'event_cal'))
+  # Now make sure it's really there
+  calendar = lookup_calendar(calendar)
   # Don't freak out if there's no calendar
   if not calendar:
     logging.info("No event calendar yet, retry later.")
-    return [task]
+    return []
   # Great now return the results
   return update_data(token, grab_events, format_eventtask, 
                      'events', calendar)
@@ -498,14 +480,11 @@ def handle_updatebirthdays(task, gcal, token):
   logging.info('Checking for birthdays to update')
   # If the calendar hasn't been given look it up
   calendar = task.get('calendar', grab_one_user_field(token, 'bday_cal'))
-  
+  # Now make sure it's really there
+  calendar = lookup_calendar(calendar)
   if not calendar:
     logging.info("No birthday calendar yet, retry later.")
-    return [task]
-
-  # FIXME - check the birthday calendar exists! 
-  # (not "" and valid and returns 200)
-
+    return []
   # Great now return the results
   return update_data(token, grab_birthdays, format_birthdaytask, 
                      'birthdays', calendar)
@@ -590,15 +569,14 @@ def refresh_everyones_calendars():
   It loops through each user and adds refresh tasks to the task queue."""
   tasks = []
   users = Users.all()
-  ## TODO
+  ## FIXME
   # - test it actually works!
   # - Check if calendar exists before queing update
-  # - If no calendars exist queue a user-purge event
-  # - If future date quota limit is on don't do it!
   for user in users:
-    enqueue_tasks([{'type': 'update-events', 'calendar': user.event_cal},
-                   {'type': 'update-birthdays', 'calendar': user.bday_cal}],
-                  user.google_token)
+    if user.facebook_token and user.google_token:
+      enqueue_tasks([{'type': 'update-events', 'calendar': user.event_cal},
+                     {'type': 'update-birthdays', 'calendar': user.bday_cal}],
+                    user.google_token)
 
 def handle_tasks(tasks, token):
   """This function is used by the /worker view to actually do all the work given
@@ -623,24 +601,23 @@ def handle_tasks(tasks, token):
               'remove-event': 'handle_remove_event',
               'new-user': 'handle_newuser_event',
               'update-birthdays': 'handle_updatebirthdays',
-              'update-events': 'handle_updateevents',
-              'delete-user': 'handle_delete_user'}
+              'update-events': 'handle_updateevents'}
 
   # Deal with the tasks
   for task in tasks:
     handler = globals()[handlers.get(task['type'], 'handle_unknown_task')]
-    future_tasks.extend(handler(task, gcal, token))
+    try:
+      # Dispatch the task to the appropriate handler
+      future_tasks.extend(handler(task, gcal, token))
+    except Exception, err:
+      # Catch any exception, this is to stop Google retrying the task like mad
+      logging.error('Handler for ' + task['type'] + ' Failed!\n' +
+                    'Error: ' + str(err) + '\n' +
+                    'Task: ' + str(task))
+      return
 
   # Enqueue any future tasks we need to deal with
   enqueue_tasks(future_tasks, token)
-
-def handle_delete_user(task, gcal, token):
-  """Take a delete-user task and deal with it. Just delete the user and return
-  a empty list."""
-  users = Users.all().filter("google_token =", token)
-  for user in users:
-      user.delete()
-  return []
 
 def delay_tasks(message="hoooooooooooooolllllld-up! brap brap"):
   """When we receive a 'quota depleated' error we need to put everything on
@@ -691,29 +668,107 @@ def handle_unknown_task(task, gcal, token):
   logging.info('Unknown task type "' + task['type'] + '"')
   return []
 
-def user_connection_status(signed_request, google_token):
-  # Init the variables
-  fb_con = False
-  google_con = False
-  status = "Not connected."
+def check_facebook_scope(permissions, token=None, graph=None):
+  """Take a list of permissions and return a list of permissions that are
+  present. It uses the graph api to run a FQL query."""
+  # Make sure we've got a graph connection
+  if not graph:
+    graph = facebook.GraphAPI(token)
+  # Craft and run the query
+  scope = ",".join(permissions)
+  query = 'SELECT ' + scope + ' FROM permissions WHERE uid=me()'
+  results = graph.fql(query)
+  # If we have results return them
+  if results and len(results):
+    return [k for k in results[0] if results[0][k]]
+  else:
+    return []
 
-  # Grab the auth_token from facebook's canvas magic
+def facebook_scope_is(permissions, token=None, graph=None):
+  """Take a list of permissions and return True if they are all present or
+  False if they are not. (Ignores extra permissions.)"""
+  actual_permissions = check_facebook_scope(permissions, token=token, 
+                                            graph=graph)
+  logging.info('perm:' + ','.join(actual_permissions))
+  logging.info('needed perm:' + ','.join(permissions))
+  if actual_permissions == permissions:
+    return True
+  else:
+    return False
+
+def decode_signed_request(signed_request):
+  """Take the signed request and return the id and token."""
   data = facebook.parse_signed_request(signed_request,
                                        config.FACEBOOK_APP_SECRET)
   if data:
-    facebook_id = data.get('user_id', None)
-    facebook_token = data.get('oauth_token', None)
-    
-    if facebook_token:
-      fb_con = True
-      # Grab the Google connection details
-      user, gcal = gcal_connect(facebook_id, facebook_token, google_token)
-      # Make sure the Facebook token is up to date
-      if user and facebook_token != user.facebook_token:
-        user.facebook_token = facebook_token
+    return data.get('user_id', None), data.get('oauth_token', None)
+  else:
+    return None, None
+
+def fb_connect(facebook_id, facebook_token, permissions):
+  "Take the details from Facebook and return the User object or None"""
+  if facebook_id and facebook_token:
+    # First check they have all the required permissions
+    graph = facebook.GraphAPI(facebook_token)
+    if facebook_scope_is(permissions, graph=graph):
+      # Good now let's see if they are in our database
+      user = Users.all().filter("facebook_id =", facebook_id).get()
+      if user:
+        # They are, let's make sure their Facebook token is up to date
+        if facebook_token != user.facebook_token:
+          user.facebook_token = facebook_token
+          user.put()
+      else:
+        # They aren't in our database, add 'um!
+        user = Users(facebook_id=facebook_id,
+                     facebook_token=facebook_token,
+                     status='Not connected to Google Calendar.')
         user.put()
-      # Now see if the user is authed with Google calendar
+    else:
+      # They don't have proper permissions, ignore them!
+      user = None
+  return user
+
+def gcal_connect(user, token):
+  """Take a user and a google token parameter. Return a google connection if
+  connected or None."""
+  gcal = None
+  if user.google_token:
+    # Already registered, make sure existing token is valid
+    gcal = check_google_token(user.google_token)
+  if not gcal:
+    # It's not, let's see if they have passed a good token
+    if token:
+      gcal = upgrade_google_token(token)
       if gcal:
-        google_con = True
-        status = 'Connected to Google'
-  return {'google': google_con, 'facebook': fb_con, 'status': status}
+        # New user, update their shit
+        user.status = 'Connected to Google Calendar.'
+        user.google_token = gcal.GetAuthSubToken()
+        user.put()
+        enqueue_tasks([{'type': 'new-user'}], user.google_token)
+  return gcal
+
+def quota_status():
+  quota_used_up =  we_gotta_wait()
+  if quota_used_up:
+    return ("CalenDerp has used up its Google quota, " +
+            "everything is on hold until " + str(quota_used_up))
+
+def user_connection_status(signed_request, google_token, permissions):
+  # Init the vars to pass back
+  facebook_connected = False
+  google_connected = False
+  status = ""
+
+  # Decode the signed_request data from Facebook
+  facebook_id, facebook_token = decode_signed_request(signed_request)
+  # Now check if we're connected too Facebook and Google calendar
+  user = fb_connect(facebook_id, facebook_token, permissions)
+  if user:
+    status = user.status
+    facebook_connected = True
+    if gcal_connect(user, google_token):
+      google_connected = True
+  # Finaly return something simple for the view to use
+  return {'google': google_connected, 
+          'facebook': facebook_connected, 'status': quota_status() or status}
