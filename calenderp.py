@@ -248,7 +248,8 @@ def format_eventtask(event, task_type, calendar):
   put in the task queue."""
   return {'type': task_type, 'title': event['name'], 
           'calendar': calendar, 'content': event['content'],
-          'start': event['start'], 'end': event['end'], 
+          'start': event['start'].replace('+', '.'),
+          'end': event['end'].replace('+', '.'), 
           'fb_id': event['id'], 'location': event['location']}
 
 def enqueue_tasks(updates, token, chunk_size=10):
@@ -502,7 +503,7 @@ def handle_insert_event(task, gcal, token):
     gcal.InsertEvent(event, task['calendar'])
   except (DownloadError, RequestError), err:
     logging.info("Couldn't add event, " + task['title'] + " retrying.")
-    return handle_google_error(err) + [task]
+    return handle_google_error(err) #+ [task]
   except apiproxy_errors.OverQuotaError:
     logging.info('Couldn\'t add event, over quota :(')
     delay_tasks()
