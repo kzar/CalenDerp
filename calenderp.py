@@ -23,6 +23,7 @@ from django.utils import simplejson as json
 from datetime import datetime, timedelta
 from uuid import uuid4
 from facebook import GraphAPIError
+from timezones import PT, UTC
 
 # Stuff for Google calendar
 sys.path.insert(0, 'gdata.zip/gdata')
@@ -126,10 +127,12 @@ def grab_birthdays(user):
       pass
   return results
 
-def parse_date(date):
+def parse_date(date, tz=None):
   """Takes an ISO date string, parses it and returns a datetime object."""
   try:
-    return datetime(*map(int, re.split('[^\d]', date)[:-1]))
+    values = map(int, re.split('[^\d]', date))[:-1]
+    assert(len(values) > 2)
+    return datetime(tzinfo=tz, *values)
   except:
     return None
 
@@ -227,7 +230,6 @@ def format_birthdaytask(birthday, task_type, calendar):
   start = start.strftime('%Y%m%d')
   end = datetime(year, birthday['month'], birthday['day'], 12, 0)
   end = end.strftime('%Y%m%d')
-
   # Return the task
   return {'type': task_type, 'title': title, 'content': title,
           'start': start, 'end': end, 'picture': birthday['pic'],
@@ -236,10 +238,15 @@ def format_birthdaytask(birthday, task_type, calendar):
 def format_eventtask(event, task_type, calendar):
   """Helpful function to take an event and return a task ready to be
   put in the task queue."""
-  return {'type': task_type, 'title': event['name'], 
-          'calendar': calendar, 'content': event['content'],
-          'start': event['start'].replace('+', '.'),
-          'end': event['end'].replace('+', '.'), 
+  # Adjust the mangled dates Facebook gives us
+  start = parse_date(event['start'], PT()).astimezone(UTC())
+  end = parse_date(event['end'], PT()).astimezone(UTC())
+  # Put them into the format Google wants
+  start = start.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+  end = end.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+  # Now return the task
+  return {'type': task_type, 'title': event['name'], 'calendar': calendar, 
+          'content': event['content'], 'start': start, 'end': end, 
           'fb_id': event['id'], 'location': event['location']}
 
 def enqueue_tasks(updates, token, chunk_size=10):
@@ -302,7 +309,7 @@ def populate_event(event, title, content, start, end,
     event.where = [gdata.calendar.Where(value_string=location)]
 
   # Finish up and return
-  event.title = atom.Title(text=content)
+  event.title = atom.Title(text=title)
   event.content = atom.Content(text=content)
   return event
 
