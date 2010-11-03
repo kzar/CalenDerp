@@ -46,7 +46,12 @@ class MainPage(webapp.RequestHandler):
   def get(self):
     # Check if we are connected with Facebook and Google
     signed_request = self.request.get("signed_request")
-    google_token = self.request.get("token", None)
+    google_token = self.request.get("token")
+    
+    # If not within Facebook frame we need to redirect them
+    if not signed_request:
+      self.redirect(config.FACEBOOK_APP_URL)
+
     connection_status = calenderp.user_connection_status(signed_request,
                                                          google_token,
                                                          config.FACEBOOK_SCOPE)

@@ -200,16 +200,6 @@ def create_calendar(gcal, title, summary):
   calendar.color = gdata.calendar.Color(value='#2952A3')
   return gcal.InsertCalendar(new_calendar=calendar)
 
-def find_calendar(gcal, calendar_link):
-  """Return a calendar or None if not found"""
-  try:
-    return gcal.Query(calendar_link)
-  except RequestError:
-    return None
-
-def update_events(user, calendar):
-  return None
-
 def list_contains(needle, haystack):
   """Does a list contain something? Return something if yes or None if no"""
   try:
@@ -358,10 +348,8 @@ def handle_newuser_event(task, gcal, token):
   """We have a new user, file some paperwork and return a few further tasks
   to get them all set up and ready."""
   logging.info("Setting up new user.")
-  return [{'type': 'insert-calendar', 'name': 'Birthdays', 
-           'desc': 'Facebook friend birthdays', 'datastore': 'bday_cal'},
-          {'type': 'insert-calendar', 'name': 'Events',
-           'desc': 'Facebook events', 'datastore': 'event_cal'},
+  return [dict({'type': 'insert-calendar'}, **config.BIRTHDAY_CALENDAR),
+          dict({'type': 'insert-calendar'}, **config.EVENT_CALENDAR),
           {'type': 'update-events'},
           {'type': 'update-birthdays'}]
 
@@ -446,47 +434,80 @@ def update_data(google_token, grab_function, format_function,
   # We're done, give them the list of changes
   return changes
 
-def grab_one_user_field(google_token, datastore_key):
-  """Quick little helper function, look up a user by their token and return
-  the contents of the given key for that user."""
-  user = Users.all().filter("google_token =", google_token)[0]
-  return getattr(user, datastore_key)
+def list_calendars(gcal):
+  calendars = []
+  feed = gcal.GetOwnCalendarsFeed()
+  for i, calendar in enumerate(feed.entry):
+    description = str(calendar.summary and calendar.summary.text)
+    calendars.append({'title': calendar.title.text,
+                      'description': description,
+                      'link': calendar.GetAlternateLink().href})
+  return calendars
 
-def lookup_calendar(calendar):
-  if calendar:
-    ## FIXME
-    # Write some code here that checks that the calendar really exists
-    # and if not somehow try and find it or create it.
-    return calendar
+def find_calendar(calendars, link=None, title=None, description=None, 
+                  link_key=None, data_key=None):
+  """Take a list of calendars and the details of the calendars we are interested
+  in. Search the list for the calendar, return the calendar's link if we can
+  find it or None otherwise. The second return value is a boolean, True if
+  the calendar link given was out of date."""
+  # First check for the link, the best way to find a calendar by far
+  if link:
+    for calendar in calendars:
+      if calendar['link'] == link:
+        return link, False
+  # Oh dear, well let's check for a matching description.. scraping the barrel
+  if description:
+    for calendar in calendars:
+      if calendar['description'] == description:
+        return calendar['link'], True
+  # We could search by Title but I think that's a bad idea, too vague
+  if link:
+    return None, True
+  else:
+    return None, False
+
+def lookup_calendar(calendar_link, details, gcal, token):
+  """Take a calendar link, the details about a calendar (in config.py),
+  a google calendar connection + token. Use the link given if it exists,
+  otherwise take the link from the datastore. Now make sure the calendar still
+  exists and is up to date. Return the calendar link or None."""
+  user = Users.all().filter("google_token = ", token)[0]
+  calendar = calendar_link or getattr(user, details['link_key'])
+  calendar, needs_updating = find_calendar(list_calendars(gcal),
+                                           link=calendar, **details)
+  if needs_updating:
+    setattr(user, details['link_key'], calendar)
+    if not calendar or not calendar_link :
+      setattr(user, details['data_key'], None)
+    user.put()
+  return calendar
 
 def handle_updateevents(task, gcal, token):
   """This updates the user's events. It grabs the latest events, checks for 
   anything new and returns a list of tasks to make the needed changes."""
   logging.info('Checking for events to update')
-  # If the calendar hasn't been given look it up
-  calendar = task.get('calendar', grab_one_user_field(token, 'event_cal'))
-  # Now make sure it's really there
-  calendar = lookup_calendar(calendar)
-  # Don't freak out if there's no calendar
+  # Grab the calendar link
+  calendar = lookup_calendar(task.get('calendar'), config.EVENT_CALENDAR,
+                             gcal, token)
+  # We can't update a calendar that doesn't exist
   if not calendar:
-    logging.info("No event calendar yet, retry later.")
+    logging.info("No event calendar, can't update the events.")
     return []
-  # Great now return the results
-  return update_data(token, grab_events, format_eventtask, 
-                     'events', calendar)
+  # It's there, update and return the results
+  return update_data(token, grab_events, format_eventtask, 'events', calendar)
   
 def handle_updatebirthdays(task, gcal, token):
-  """This event updates the users birthdays. It returns a list of tasks needed
+  """This updates the users birthdays. It returns a list of tasks needed
   to be completed to bring the user's birthday calendar up to date."""
   logging.info('Checking for birthdays to update')
-  # If the calendar hasn't been given look it up
-  calendar = task.get('calendar', grab_one_user_field(token, 'bday_cal'))
-  # Now make sure it's really there
-  calendar = lookup_calendar(calendar)
+  # Grab the calendar link
+  calendar = lookup_calendar(task.get('calendar'), config.BIRTHDAY_CALENDAR,
+                             gcal, token)
+  # We can't update a calendar that doesn't exist
   if not calendar:
-    logging.info("No birthday calendar yet, retry later.")
+    logging.info("No birthdays calendar, can't update their birthdays.")
     return []
-  # Great now return the results
+  # It's there, update and return the results
   return update_data(token, grab_birthdays, format_birthdaytask, 
                      'birthdays', calendar)
 
@@ -568,11 +589,7 @@ def handle_remove_event(task, gcal, token):
 def refresh_everyones_calendars():
   """This function is used by the /refresh view to refresh everyone's calendars.
   It loops through each user and adds refresh tasks to the task queue."""
-  tasks = []
   users = Users.all()
-  ## FIXME
-  # - test it actually works!
-  # - Check if calendar exists before queing update
   for user in users:
     if user.facebook_token and user.google_token:
       enqueue_tasks([{'type': 'update-events', 'calendar': user.event_cal},
@@ -595,8 +612,6 @@ def handle_tasks(tasks, token):
 
   # Map task types to handler functions
   handlers = {'insert-calendar': 'handle_insert_calendar',
-              'update-calendar': 'handle_update_calendar',
-              'remove-calendar': 'handle_remove_calendar',
               'insert-event': 'handle_insert_event',
               'update-event': 'handle_update_event',
               'remove-event': 'handle_remove_event',
@@ -647,24 +662,12 @@ def handle_insert_calendar(task, gcal, token):
       return [task]
   else:
     # Record the calendar in the user's datastore
-    datastore = task.get('datastore', None)
-    if datastore:
-      user = Users.all().filter("google_token =", token)[0]      
-      setattr(user, datastore, new_cal.content.src)
-      user.put()
-    # Done
+    user = Users.all().filter("google_token =", token)[0]      
+    setattr(user, task['link_key'], new_cal.content.src)
+    setattr(user, task['data_key'], None)
+    user.put()
     return []
   
-def handle_update_calendar(task, gcal, token):
-  """Take an update calendar task and deal with it. Return a list of tasks to
-  perform later or an empty list."""
-  pass
-
-def handle_remove_calendar(task, gcal, token):
-  """Take a update calendar task and deal with it. Return a list of tasks to
-  perform later or an empty list."""
-  pass
-
 def handle_unknown_task(task, gcal, token):
   logging.info('Unknown task type "' + task['type'] + '"')
   return []
@@ -728,7 +731,7 @@ def fb_connect(facebook_id, facebook_token, permissions):
     else:
       # They don't have proper permissions, ignore them!
       user = None
-  return user
+    return user
 
 def gcal_connect(user, token):
   """Take a user and a google token parameter. Return a google connection if
@@ -773,3 +776,9 @@ def user_connection_status(signed_request, google_token, permissions):
   # Finaly return something simple for the view to use
   return {'google': google_connected, 
           'facebook': facebook_connected, 'status': quota_status() or status}
+
+## Todo
+# - Sort out Event title / description difference (clue is in the log entry)
+# - Sort out event changes, it didn't notice a deletion OR a change!
+# - Think about centralised error handling stuff
+# - Handle scope check timeout gracefully
