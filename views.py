@@ -12,7 +12,6 @@
 # 
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 import config, calenderp, logging, os, facebook
 from django.utils import simplejson as json
 from google.appengine.ext import webapp
@@ -58,18 +57,18 @@ class MainPage(webapp.RequestHandler):
     # We dun goofed! Tell the user to refresh
     if connection_status['error'] == True:
       args = {}
-      page = 'vague_error.html'
+      page = 'templates/vague_error.html'
       
     # Facebook app is installed
     if connection_status['facebook'] == True:
       # Connected to Google Calendar
       if connection_status['google'] == True:
         args = {'status': connection_status['status']}
-        page = 'show_status.html'
+        page = 'templates/show_status.html'
       # Not connected to Google Calendar yet
       else:
         args = {'login_link': calenderp.GetAuthSubUrl(config.FACEBOOK_APP_URL)}
-        page = 'google_login.html'
+        page = 'templates/google_login.html'
     # Facebook app isn't installed yet
     else:
       install_link = facebook.oauth_URL(client_id=config.FACEBOOK_APP_ID, 
@@ -77,7 +76,7 @@ class MainPage(webapp.RequestHandler):
                                         scope=",".join(config.FACEBOOK_SCOPE),
                                         display="page")
       args = {'install_link': install_link}
-      page = 'install.html' 
+      page = 'templates/install.html' 
     # Either way render the page :)
     path = os.path.join(os.path.dirname(__file__), page);
     self.response.out.write(template.render(path, args))

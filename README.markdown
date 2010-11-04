@@ -17,7 +17,6 @@ Todo
    consistent and centralised somehow. 
  - Process requests to the Google Calendar API in batches, hopefully keeping us within quotas.
  - Make status page a lot clearer, explain what's happening better.
- - Re-organise files, seperate the templates from the Python code.
  - Update user's status when doing the various tasks.
 
 License

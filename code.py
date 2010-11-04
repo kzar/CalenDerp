@@ -16,13 +16,12 @@ import views
 from google.appengine.ext import webapp
 from google.appengine.ext.webapp.util import run_wsgi_app
 
-application = webapp.WSGIApplication(
-                                     [('/', views.MainPage),
+application = webapp.WSGIApplication([('/', views.MainPage),
                                       ('/refresh', views.refresh),
                                       ('/worker', views.worker)],
                                      debug=True)
 def main():
-    run_wsgi_app(application)
+  run_wsgi_app(application)
 
 if __name__ == "__main__":
-    main()
+  main()

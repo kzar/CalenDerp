@@ -748,9 +748,9 @@ def fb_connect(facebook_id, facebook_token, permissions):
     return user
 
 def facebook_connect(facebook_id, facebook_token, permissions, retrys=5):
-"""Recursively call fb_connect to connect the user. Catch all errors and log
-them so that they aren't given to the user. After the retrys are used up 
-give up and return an error."""
+  """Recursively call fb_connect to connect the user. Catch all errors and log
+  them so that they aren't given to the user. After the retrys are used up 
+  give up and return an error."""
   if retrys < 1:
     return True, None
   else:
@@ -790,8 +790,7 @@ def quota_status():
     return ("CalenDerp has used up its Google quota, " +
             "everything is on hold until " + str(quota_used_up))
 
-def user_connection_status(signed_request, google_token, permissions,
-                           retry_limit=5):
+def user_connection_status(signed_request, google_token, permissions):
   # Init the vars to pass back
   facebook_connected = False
   google_connected = False
