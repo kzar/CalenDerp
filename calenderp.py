@@ -287,7 +287,7 @@ def populate_event(event, title, content, start, end,
     event.recurrence = gdata.calendar.Recurrence(text=recurrence_data)
   else:
     # One off event, set the start / end times
-    event.when.append(gdata.calendar.When(start_time=start, end_time=end))
+    event.when = [gdata.calendar.When(start_time=start, end_time=end)]
   
   if fb_id:
     # Add the facebook id to the extended properties
@@ -451,8 +451,8 @@ def list_calendars(gcal):
                       'link': calendar.GetAlternateLink().href})
   return calendars
 
-def find_calendar(calendars, link=None, title=None, description=None, 
-                  link_key=None, data_key=None):
+def find_calendar(calendars, link=None, description=None, link_key=None,
+                  data_key=None, **junk_args):
   """Take a list of calendars and the details of the calendars we are interested
   in. Search the list for the calendar, return the calendar's link if we can
   find it or None otherwise. The second return value is a boolean, True if
@@ -575,7 +575,7 @@ def handle_remove_event(task, gcal, token):
   perform later or an empty list."""
   # Find the event to remove
   events, search_failed = find_event(gcal, task['calendar'], 
-                                     extended={'+fb_id+':task['id']})
+                                     extended={'+fb_id+':task['fb_id']})
 
   # Search for event failed, we should retry
   if search_failed:
@@ -583,14 +583,14 @@ def handle_remove_event(task, gcal, token):
 
   if events:
     for event in events:
-      logging.info("Deleting event " + str(event.title))
+      logging.info("Deleting event " + str(event.title.text))
       try:
-        calendar_service.DeleteEvent(event.GetEditLink().href)  
-      except DownloadError:
+        gcal.DeleteEvent(event.GetEditLink().href)  
+      except (DownloadError, RequestError), err:
         logging.error("Couldn't delete event, " + task['title'] + "retrying.")
-        return handle_google_error + [task]
+        return handle_google_error(err) + [task]
   else:
-    logging.error("Couldn't find event to delete:" + task['id'])
+    logging.error("Couldn't find event to delete:" + task['fb_id'])
   return []
 
 def refresh_everyones_calendars():
@@ -653,9 +653,16 @@ def delay_tasks(message="hoooooooooooooolllllld-up! brap brap"):
 def handle_insert_calendar(task, gcal, token):
   """Take an insert calendar task and deal with it. Return a list of tasks to
   perform later or an empty list."""
-  # Create the calendar
   logging.info("Adding calendar " + task['name'])
 
+  # Check that it doesn't already exist
+  calendar = lookup_calendar(None, task, gcal, token)
+  if calendar:
+    logging.info("Didn't create calendar " + task['name'] +
+                 "because it already exists.")
+    return []
+
+  # OK it doesn't let's add it
   try:
     new_cal = create_calendar(gcal, task['name'], task['desc'])
   except (RequestError, DownloadError), err:
@@ -740,6 +747,24 @@ def fb_connect(facebook_id, facebook_token, permissions):
       user = None
     return user
 
+def facebook_connect(facebook_id, facebook_token, permissions, retrys=5):
+"""Recursively call fb_connect to connect the user. Catch all errors and log
+them so that they aren't given to the user. After the retrys are used up 
+give up and return an error."""
+  if retrys < 1:
+    return True, None
+  else:
+    try:
+      error = False
+      user = fb_connect(facebook_id, facebook_token, permissions)
+    except Exception, err:
+      logging.error('Checking user connection status Failed!\n' + 
+                    'Error: ' + str(err) + 
+                    ' (' + str(retrys) + ' retrys left)')
+      error, user = facebook_connect(facebook_id, facebook_token, 
+                                     permissions, retrys - 1)
+  return error, user
+
 def gcal_connect(user, token):
   """Take a user and a google token parameter. Return a google connection if
   connected or None."""
@@ -765,7 +790,8 @@ def quota_status():
     return ("CalenDerp has used up its Google quota, " +
             "everything is on hold until " + str(quota_used_up))
 
-def user_connection_status(signed_request, google_token, permissions):
+def user_connection_status(signed_request, google_token, permissions,
+                           retry_limit=5):
   # Init the vars to pass back
   facebook_connected = False
   google_connected = False
@@ -773,19 +799,14 @@ def user_connection_status(signed_request, google_token, permissions):
 
   # Decode the signed_request data from Facebook
   facebook_id, facebook_token = decode_signed_request(signed_request)
-  # Now check if we're connected too Facebook and Google calendar
-  user = fb_connect(facebook_id, facebook_token, permissions)
+  # See if we are connected properly, with the proper permissions
+  error, user = facebook_connect(facebook_id, facebook_token, permissions)
+  # Now check results, test Google token too
   if user:
     status = user.status
     facebook_connected = True
     if gcal_connect(user, google_token):
       google_connected = True
   # Finaly return something simple for the view to use
-  return {'google': google_connected, 
+  return {'google': google_connected, 'error': error,
           'facebook': facebook_connected, 'status': quota_status() or status}
-
-## Todo
-# - Sort out Event title / description difference (clue is in the log entry)
-# - Sort out event changes, it didn't notice a deletion OR a change!
-# - Think about centralised error handling stuff
-# - Handle scope check timeout gracefully

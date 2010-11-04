@@ -55,6 +55,11 @@ class MainPage(webapp.RequestHandler):
     connection_status = calenderp.user_connection_status(signed_request,
                                                          google_token,
                                                          config.FACEBOOK_SCOPE)
+    # We dun goofed! Tell the user to refresh
+    if connection_status['error'] == True:
+      args = {}
+      page = 'vague_error.html'
+      
     # Facebook app is installed
     if connection_status['facebook'] == True:
       # Connected to Google Calendar

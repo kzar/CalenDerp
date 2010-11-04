@@ -15,8 +15,6 @@ Todo
 ----
  - Sort out error handling for Google calendar / Facebook queries. Make it
    consistent and centralised somehow. 
- - Start passing the user object to handler functions if it's avaliable.
- - Check for Calendars properly, re-create them if not there.
  - Process requests to the Google Calendar API in batches, hopefully keeping us within quotas.
  - Make status page a lot clearer, explain what's happening better.
  - Re-organise files, seperate the templates from the Python code.
