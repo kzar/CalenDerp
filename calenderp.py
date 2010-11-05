@@ -473,6 +473,15 @@ def find_calendar(calendars, link=None, description=None, link_key=None,
   else:
     return None, False
 
+def ascii_keys(dictionary):
+  """Python doesn't let you have unicode keys in a dictionary in certain
+  situations. You get a 'keywords must be strings' error so this function
+  takes a dict and returns one that Python can use.. grr"""
+  ascii_dict = {}
+  for k,v in dictionary.items():
+    ascii_dict[k.encode("ascii")] = v
+  return ascii_dict
+
 def lookup_calendar(calendar_link, details, gcal, token):
   """Take a calendar link, the details about a calendar (in config.py),
   a google calendar connection + token. Use the link given if it exists,
@@ -481,7 +490,7 @@ def lookup_calendar(calendar_link, details, gcal, token):
   user = Users.all().filter("google_token = ", token)[0]
   calendar = calendar_link or getattr(user, details['link_key'])
   calendar, needs_updating = find_calendar(list_calendars(gcal),
-                                           link=calendar, **details)
+                                           link=calendar, **ascii_keys(details))
   if needs_updating:
     setattr(user, details['link_key'], calendar)
     if not calendar or not calendar_link :
@@ -653,18 +662,18 @@ def delay_tasks(message="hoooooooooooooolllllld-up! brap brap"):
 def handle_insert_calendar(task, gcal, token):
   """Take an insert calendar task and deal with it. Return a list of tasks to
   perform later or an empty list."""
-  logging.info("Adding calendar " + task['name'])
+  logging.info("Adding calendar " + task['title'])
 
   # Check that it doesn't already exist
   calendar = lookup_calendar(None, task, gcal, token)
   if calendar:
-    logging.info("Didn't create calendar " + task['name'] +
+    logging.info("Didn't create calendar " + task['title'] +
                  "because it already exists.")
     return []
 
   # OK it doesn't let's add it
   try:
-    new_cal = create_calendar(gcal, task['name'], task['desc'])
+    new_cal = create_calendar(gcal, task['title'], task['description'])
   except (RequestError, DownloadError), err:
     return handle_google_error(err) + [task]
     if 'quota' in str(err):
