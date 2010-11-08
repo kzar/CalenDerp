@@ -619,7 +619,7 @@ def handle_update_event(task, gcal, token):
         return handle_google_error(err, task)
   else:
     logging.error("Couldn't find event to update:" + task['fb_id'])
-  return future_tasks
+  return []
 
 def handle_remove_event(task, gcal, token):
   """Take a update event task and deal with it. Return a list of tasks to
