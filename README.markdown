@@ -13,11 +13,11 @@ Anyway give it a try: <http://apps.facebook.com/calenderp/>
 
 Todo
 ----
- - Sort out error handling for Google calendar / Facebook queries. Make it
-   consistent and centralised somehow. 
+ - Centralise Facebook query error handling
+ - Add all the Google Data errors to config.py
  - Process requests to the Google Calendar API in batches, hopefully keeping us within quotas.
  - Make status page a lot clearer, explain what's happening better.
- - Update user's status when doing the various tasks.
+ - Add translations for different languages
 
 License
 -------

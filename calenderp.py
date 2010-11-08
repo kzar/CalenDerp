@@ -55,13 +55,64 @@ class Flags(db.Model):
   flag_key = db.StringProperty(required=True)
   value = db.StringProperty(required=True)
 
-def handle_google_error(err):
-  """Take a Google error and return a lists of tasks to carry out based on
-  it. Just a shell for now but could be useful in the future."""
-  logging.info("Google error: " + str(err))
+def parse_google_error(err):
+  """Take a Google error and return an action like 'retry' or 'give-up' based
+  on the error. Still needs work."""
+  # What about these?! apiproxy_errors.OverQuotaError:
+
+  # Log the error
+  logging.error("Google error: " + str(err))
+
+  # I have no example of a quota error so I'll bodge this check for now:
   if 'quota' in str(err):
+    logging.error('QUOTA ERROR!!')
     delay_tasks()
-  return []
+    return 'retry'
+
+  # Get the error's details from the exception object
+  error_code = err[0]['status']
+  error_message = err[0]['body']
+  error_reason = err[0]['reason']
+
+  # Make a dict of errors to check against (error's reason is more specific
+  # but fall back to the error code)
+  error_lookup = {}
+  for e in config.GOOGLE_ERRORS:
+    error_lookup[e['reason']] = e
+    error_lookup[e['code']] = e
+
+  # Lookup the error's reason, this tells us exactly what to do
+  match = error_lookup.get(error_reason, None)
+  if not match:
+    logging.error('Received unknown error reason "' + error_reason + '"')
+    match = error_lookup.get(error_code, None)
+  
+  # If we know what to do tell them, if not give up
+  if match:
+    logging.info(match['explanation'])
+    return match['action']
+  else:
+    logging.error('Can\'t handle this error properly, it\'s unknown!')    
+    return 'give-up'
+
+def handle_google_error(err, task):
+  """Helper function to make handling Google errors within handlers easier.
+  Takes an error and the task being processed and returns a list of tasks to
+  perform."""
+  # First make sure there are any retrys left for the task
+  retrys = task.get('retrys', config.GOOGLE_QUERY_RETRYS)
+  if (retrys < 1):
+    logging.error('We ran out of retrys for this task!')
+    return []
+  # Now figure out what action should be taken
+  action = parse_google_error(err)  
+  # OK now do it..
+  if action == 'retry':
+    logging.info(str(retrys) + ' retrys left.')
+    task['retrys'] = retrys - 1
+    return [task]
+  if action == 'give-up':
+    return []
 
 def set_flag(key, value):
   """Set a flag in the datastore's value."""
@@ -147,7 +198,6 @@ def grab_events(user):
   events = graph.get_object("me/events/attending", fields=fields)
 
   today = datetime.today()
-  #today = datetime(2009,5,1)
   results = []
   for event in events['data']:
     try: 
@@ -157,7 +207,7 @@ def grab_events(user):
                         'start': event['start_time'],
                         'end': event['end_time'],
                         'id': event['id'],
-                        'location': event['location']})
+                        'location': event.get('location', '')})
     except TypeError:
       pass
   return results
@@ -249,7 +299,7 @@ def format_eventtask(event, task_type, calendar):
           'content': event['content'], 'start': start, 'end': end, 
           'fb_id': event['id'], 'location': event['location']}
 
-def enqueue_tasks(updates, token, chunk_size=10):
+def enqueue_tasks(updates, token, chunk_size=5):
   """Take a list of updates and add them to the Task Queue."""
   # Makes sure the task queue really does wait if we're outa quota
   run_date = parse_date(get_flag('next-task-run-date'))
@@ -507,8 +557,8 @@ def handle_updateevents(task, gcal, token):
                              gcal, token)
   # We can't update a calendar that doesn't exist
   if not calendar:
-    logging.info("No event calendar, can't update the events.")
-    return []
+    return [dict({'type': 'insert-calendar'}, **config.EVENT_CALENDAR), task]
+
   # It's there, update and return the results
   return update_data(token, grab_events, format_eventtask, 'events', calendar)
   
@@ -521,8 +571,8 @@ def handle_updatebirthdays(task, gcal, token):
                              gcal, token)
   # We can't update a calendar that doesn't exist
   if not calendar:
-    logging.info("No birthdays calendar, can't update their birthdays.")
-    return []
+    return [dict({'type': 'insert-calendar'}, **config.BIRTHDAY_CALENDAR), task]
+
   # It's there, update and return the results
   return update_data(token, grab_birthdays, format_birthdaytask, 
                      'birthdays', calendar)
@@ -538,15 +588,9 @@ def handle_insert_event(task, gcal, token):
                          repeat_freq=task.get('repeat', None),
                          location=task.get('location', None))
     gcal.InsertEvent(event, task['calendar'])
+    return []
   except (DownloadError, RequestError), err:
-    logging.info("Couldn't add event, " + task['title'] + " retrying.")
-    return handle_google_error(err) #+ [task]
-  except apiproxy_errors.OverQuotaError:
-    logging.info('Couldn\'t add event, over quota :(')
-    delay_tasks()
-    return []
-  else:
-    return []
+    return handle_google_error(err, task)
   
 def handle_update_event(task, gcal, token):
   """Take an update event task and deal with it. Return a list of tasks to
@@ -572,12 +616,10 @@ def handle_update_event(task, gcal, token):
       try:
         gcal.UpdateEvent(edit_link, event)
       except (DownloadError, RequestError), err:
-        logging.error("Couldn't update event, " + task['title'] + "retrying.")
-        return handle_google_error(err) + [task]
+        return handle_google_error(err, task)
   else:
     logging.error("Couldn't find event to update:" + task['fb_id'])
-  return []
-
+  return future_tasks
 
 def handle_remove_event(task, gcal, token):
   """Take a update event task and deal with it. Return a list of tasks to
@@ -596,8 +638,7 @@ def handle_remove_event(task, gcal, token):
       try:
         gcal.DeleteEvent(event.GetEditLink().href)  
       except (DownloadError, RequestError), err:
-        logging.error("Couldn't delete event, " + task['title'] + "retrying.")
-        return handle_google_error(err) + [task]
+        return handle_google_error(err, task)
   else:
     logging.error("Couldn't find event to delete:" + task['fb_id'])
   return []
@@ -606,8 +647,13 @@ def refresh_everyones_calendars():
   """This function is used by the /refresh view to refresh everyone's calendars.
   It loops through each user and adds refresh tasks to the task queue."""
   users = Users.all()
+  time = datetime.now().strftime('%A %d %B %Y - %X')
   for user in users:
     if user.facebook_token and user.google_token:
+      # Update their status. (I know a little misleading time-wise.)
+      user.status = 'Last updated: ' + time
+      user.put()
+      # Update their calendars
       enqueue_tasks([{'type': 'update-events', 'calendar': user.event_cal},
                      {'type': 'update-birthdays', 'calendar': user.bday_cal}],
                     user.google_token)
@@ -646,7 +692,6 @@ def handle_tasks(tasks, token):
       logging.error('Handler for ' + task['type'] + ' Failed!\n' +
                     'Error: ' + str(err) + '\n' +
                     'Task: ' + str(task))
-      return
 
   # Enqueue any future tasks we need to deal with
   enqueue_tasks(future_tasks, token)
@@ -675,14 +720,7 @@ def handle_insert_calendar(task, gcal, token):
   try:
     new_cal = create_calendar(gcal, task['title'], task['description'])
   except (RequestError, DownloadError), err:
-    return handle_google_error(err) + [task]
-    if 'quota' in str(err):
-      delay_tasks()
-      return [task]
-    else:
-      # Looks ok, let's just retry
-      logging.error("Couldn't add calendar " + task['name'] + " going to retry.")
-      return [task]
+    return handle_google_error(err,task)
   else:
     # Record the calendar in the user's datastore
     user = Users.all().filter("google_token =", token)[0]      
@@ -749,7 +787,7 @@ def fb_connect(facebook_id, facebook_token, permissions):
         # They aren't in our database, add 'um!
         user = Users(facebook_id=facebook_id,
                      facebook_token=facebook_token,
-                     status='Not connected to Google Calendar.')
+                     status='Connected to Facebook.')
         user.put()
     else:
       # They don't have proper permissions, ignore them!
