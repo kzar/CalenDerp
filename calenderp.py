@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import os, sys, re, facebook, logging, config
+import os, sys, re, facebook, logging, config, translations
 from google.appengine.api import users, urlfetch
 from google.appengine.api.labs import taskqueue
 from google.appengine.ext import db
@@ -50,6 +50,7 @@ class Users(db.Model):
   events = db.TextProperty()
   birthdays = db.TextProperty()
   status = db.StringProperty(required=True)
+  locale = db.StringProperty()
 
 class Flags(db.Model):
   flag_key = db.StringProperty(required=True)
@@ -270,11 +271,11 @@ def any_changes(new, old):
       return True
   return False
 
-def format_birthdaytask(birthday, task_type, calendar):
+def format_birthdaytask(birthday, task_type, calendar, l):
   """Helpful function to take a birthday and return a task ready to be
   put in the task queue."""
   # Get everything ready
-  title = birthday['name'] + "'s Birthday"
+  title = l("%s's Birthday") % birthday['name']
   year = datetime.today().year
   start = datetime(year, birthday['month'], birthday['day'], 12, 0)
   start = start.strftime('%Y%m%d')
@@ -285,7 +286,7 @@ def format_birthdaytask(birthday, task_type, calendar):
           'start': start, 'end': end, 'picture': birthday['pic'],
           'fb_id': birthday['id'], 'calendar': calendar, 'repeat': 'YEARLY'}
 
-def format_eventtask(event, task_type, calendar):
+def format_eventtask(event, task_type, calendar, l):
   """Helpful function to take an event and return a task ready to be
   put in the task queue."""
   # Adjust the mangled dates Facebook gives us
@@ -299,8 +300,36 @@ def format_eventtask(event, task_type, calendar):
           'content': event['content'], 'start': start, 'end': end, 
           'fb_id': event['id'], 'location': event['location']}
 
-def enqueue_tasks(updates, token, chunk_size=5):
+
+def check_locale(user=None, google_token=None):
+  """Take a google token, look up the user and return the locale. If we don't
+  know their locale yet then ask Facebook and record it."""
+  logging.info('Checking user\'s locale.')
+  if not user:    
+    user = Users.all().filter("google_token = ", google_token)[0]
+
+  # Check we don't already know user's locale
+  if user.locale:
+    return user.locale
+  else:
+    # We don't so ask Facebook
+    graph = facebook.GraphAPI(user.facebook_token)  
+    results = graph.get_object("me", fields='locale')
+    
+    locale = results['locale']
+    if locale:
+      # We know now, record in database
+      logging.info('Locale updated')
+      user.locale = locale
+      user.put()     
+    return locale
+
+def enqueue_tasks(updates, token, locale, chunk_size=5):
   """Take a list of updates and add them to the Task Queue."""
+  # Make sure we've got their locale
+  if not locale:
+    locale = check_locale(google_token=token)
+
   # Makes sure the task queue really does wait if we're outa quota
   run_date = parse_date(get_flag('next-task-run-date'))
   if run_date and run_date > datetime.today():
@@ -312,7 +341,8 @@ def enqueue_tasks(updates, token, chunk_size=5):
   for i in range(0, len(updates), chunk_size):
     taskqueue.add(url='/worker',
                   params={'tasks': json.dumps(updates[i:i+chunk_size]),
-                          'token': token},
+                          'token': token,
+                          'locale': locale},
                   eta=eta)
 
 def create_event(title, content, start, end, location=None, repeat_freq=None,
@@ -401,7 +431,7 @@ def find_event(gcal, calendar, search_term=None, extended=None):
   else:
     return results, False
 
-def handle_newuser_event(task, gcal, token):
+def handle_newuser_event(task, gcal, token, l):
   """We have a new user, file some paperwork and return a few further tasks
   to get them all set up and ready."""
   logging.info("Setting up new user.")
@@ -410,7 +440,7 @@ def handle_newuser_event(task, gcal, token):
           {'type': 'update-events'},
           {'type': 'update-birthdays'}]
 
-def diff_data(new_data, old_data, calendar, format_task_function):
+def diff_data(new_data, old_data, calendar, format_task_function, l):
   """Take a list of new and old data, check for differences and return
   a list of tasks needed to be performed to bring things up to date."""
   # Python requires we set this up in advance
@@ -419,7 +449,7 @@ def diff_data(new_data, old_data, calendar, format_task_function):
   # No past data, add it all and return
   if not old_data:
     for entry in new_data:
-      tasks.append(format_task_function(entry, 'insert-event', calendar))
+      tasks.append(format_task_function(entry, 'insert-event', calendar, l))
     return tasks
 
   # No existing data, query probably failed, skip
@@ -431,7 +461,7 @@ def diff_data(new_data, old_data, calendar, format_task_function):
   for old_entry in old_data:
     if not list_contains(old_entry['id'], new_data_ids):
       # Delete entry
-      tasks.append(format_task_function(old_entry, 'remove-event', calendar))
+      tasks.append(format_task_function(old_entry, 'remove-event', calendar, l))
 
   # Make a dict out of the old data so we can look records up quickly
   old_data_dict = {}
@@ -442,16 +472,17 @@ def diff_data(new_data, old_data, calendar, format_task_function):
   for new_entry in new_data:
     if not old_data_dict.has_key(new_entry['id']):
       # New entry
-      tasks.append(format_task_function(new_entry, 'insert-event', calendar))
+      tasks.append(format_task_function(new_entry, 'insert-event', calendar, l))
     else:
       # Check for any differences
       if any_changes(new_entry, old_data_dict[new_entry['id']]):
-        tasks.append(format_task_function(new_entry, 'update-event', calendar))
+        tasks.append(format_task_function(new_entry, 'update-event', calendar,
+                                          l))
     
   return tasks
 
 def update_data(google_token, grab_function, format_function, 
-                datastore_key, calendar):
+                datastore_key, calendar, l):
   """Take all the details needed to update a user's data. This is kept generic
   so we can use it to update both birthdays and events. Return a list of tasks
   that need to be carried out to perform the update."""
@@ -469,7 +500,7 @@ def update_data(google_token, grab_function, format_function,
     if 'access token' in str(err): 
       logging.info('User\'s Facebook token expired, clearing it.')
       user.facebook_token = ""
-      user.status = "Facebook connection broken."
+      user.status = l("Facebook connection broken.")
       user.put()
       return []
     else:
@@ -481,7 +512,7 @@ def update_data(google_token, grab_function, format_function,
     old_data = json.loads(old_data)    
   
   # Check for changes
-  changes = diff_data(data, old_data, calendar, format_function)
+  changes = diff_data(data, old_data, calendar, format_function, l)
   
   if changes:
     # Record their new data in the datastore
@@ -501,7 +532,7 @@ def list_calendars(gcal):
                       'link': calendar.GetAlternateLink().href})
   return calendars
 
-def find_calendar(calendars, link=None, description=None, link_key=None,
+def find_calendar(calendars, l, link=None, description=None, link_key=None,
                   data_key=None, **junk_args):
   """Take a list of calendars and the details of the calendars we are interested
   in. Search the list for the calendar, return the calendar's link if we can
@@ -515,7 +546,7 @@ def find_calendar(calendars, link=None, description=None, link_key=None,
   # Oh dear, well let's check for a matching description.. scraping the barrel
   if description:
     for calendar in calendars:
-      if calendar['description'] == description:
+      if calendar['description'] == l(description):
         return calendar['link'], True
   # We could search by Title but I think that's a bad idea, too vague
   if link:
@@ -532,14 +563,14 @@ def ascii_keys(dictionary):
     ascii_dict[k.encode("ascii")] = v
   return ascii_dict
 
-def lookup_calendar(calendar_link, details, gcal, token):
+def lookup_calendar(calendar_link, details, gcal, token, l):
   """Take a calendar link, the details about a calendar (in config.py),
   a google calendar connection + token. Use the link given if it exists,
   otherwise take the link from the datastore. Now make sure the calendar still
   exists and is up to date. Return the calendar link or None."""
   user = Users.all().filter("google_token = ", token)[0]
   calendar = calendar_link or getattr(user, details['link_key'])
-  calendar, needs_updating = find_calendar(list_calendars(gcal),
+  calendar, needs_updating = find_calendar(list_calendars(gcal), l, 
                                            link=calendar, **ascii_keys(details))
   if needs_updating:
     setattr(user, details['link_key'], calendar)
@@ -548,36 +579,37 @@ def lookup_calendar(calendar_link, details, gcal, token):
     user.put()
   return calendar
 
-def handle_updateevents(task, gcal, token):
+def handle_updateevents(task, gcal, token, l):
   """This updates the user's events. It grabs the latest events, checks for 
   anything new and returns a list of tasks to make the needed changes."""
   logging.info('Checking for events to update')
   # Grab the calendar link
   calendar = lookup_calendar(task.get('calendar'), config.EVENT_CALENDAR,
-                             gcal, token)
+                             gcal, token, l)
   # We can't update a calendar that doesn't exist
   if not calendar:
     return [dict({'type': 'insert-calendar'}, **config.EVENT_CALENDAR), task]
 
   # It's there, update and return the results
-  return update_data(token, grab_events, format_eventtask, 'events', calendar)
+  return update_data(token, grab_events, 
+                     format_eventtask, 'events', calendar, l)
   
-def handle_updatebirthdays(task, gcal, token):
+def handle_updatebirthdays(task, gcal, token, l):
   """This updates the users birthdays. It returns a list of tasks needed
   to be completed to bring the user's birthday calendar up to date."""
   logging.info('Checking for birthdays to update')
   # Grab the calendar link
   calendar = lookup_calendar(task.get('calendar'), config.BIRTHDAY_CALENDAR,
-                             gcal, token)
+                             gcal, token, l)
   # We can't update a calendar that doesn't exist
   if not calendar:
     return [dict({'type': 'insert-calendar'}, **config.BIRTHDAY_CALENDAR), task]
 
   # It's there, update and return the results
   return update_data(token, grab_birthdays, format_birthdaytask, 
-                     'birthdays', calendar)
+                     'birthdays', calendar, l)
 
-def handle_insert_event(task, gcal, token):
+def handle_insert_event(task, gcal, token, l):
   """Take an insert event task and deal with it. Return a list of tasks to
   perform later or an empty list."""
   logging.info("Adding event " + task['title'])
@@ -592,7 +624,7 @@ def handle_insert_event(task, gcal, token):
   except (DownloadError, RequestError), err:
     return handle_google_error(err, task)
   
-def handle_update_event(task, gcal, token):
+def handle_update_event(task, gcal, token, l):
   """Take an update event task and deal with it. Return a list of tasks to
   perform later or an empty list."""
   # Find the event
@@ -621,7 +653,7 @@ def handle_update_event(task, gcal, token):
     logging.error("Couldn't find event to update:" + task['fb_id'])
   return []
 
-def handle_remove_event(task, gcal, token):
+def handle_remove_event(task, gcal, token, l):
   """Take a update event task and deal with it. Return a list of tasks to
   perform later or an empty list."""
   # Find the event to remove
@@ -650,23 +682,63 @@ def refresh_everyones_calendars():
   time = datetime.now().strftime('%A %d %B %Y - %X')
   for user in users:
     if user.facebook_token and user.google_token:
-      # Update their status. (I know a little misleading time-wise.)
-      user.status = 'Last updated: ' + time
+      # Get the locale
+      if not user.locale:
+        locale = check_locale(user=user)
+      else:
+        locale = user.locale
+      l = translator(locale)
+      # Update their status. (I know, a little misleading time-wise.)      
+      user.status = l("Last updated: %s") % time
       user.put()
-      # Update their calendars
-      enqueue_tasks([{'type': 'update-events', 'calendar': user.event_cal},
-                     {'type': 'update-birthdays', 'calendar': user.bday_cal}],
-                    user.google_token)
+      # Setup the tasks
+      tasks = [{'type': 'update-events', 'calendar': user.event_cal},
+               {'type': 'update-birthdays', 'calendar': user.bday_cal}]
+      # Run the tasks
+      enqueue_tasks(tasks, user.google_token, user.locale)
 
-def handle_tasks(tasks, token):
+def lang_get(s, locale, lang):
+  """Helper function for translator, it's required because lambda is so limited
+  in Python. It just does a .get on the lang dictionary for the s string and
+  logs an error if there's no match."""
+  # Ok there's this one special case, return the locale name if we ask for it
+  if s == 'locale':
+    return locale
+  # No lang, just log and return
+  if not lang:
+    logging.error("No match for '" + s + "' in locale '" + locale + "'")
+    return s
+  # Grab the result from the language dictionary
+  if lang:
+    result = lang.get(s,None)
+    if not result:
+      # No result, just return the un-translated string but log the failure
+      logging.error("No match for '" + s + "' in locale '" + locale + "'")
+      return s
+    else:
+      # Successful translation
+      return result
+
+def translator(locale):
+  """Take a locale string and return a translation function we can use to 
+  translate into the relevant language."""
+  if not locale:
+    return lambda s:s
+  language = translations.languages.get(locale, None)
+  return lambda s:lang_get(s, locale, language)
+
+def handle_tasks(tasks, token, locale):
   """This function is used by the /worker view to actually do all the work given
   in the task queue."""
   # Connect to Google calendar
   gcal = check_google_token(token)
   if not gcal:
       # Probably because we're out of quota for the URL fetch so just enqueue
-      enqueue_tasks(tasks, token)
+      enqueue_tasks(tasks, token, locale)
       return
+
+  # Get translator function
+  l = translator(locale)
 
   # Future tasks is a list of new tasks to enqueue, 
   # generated while we have been dealing with the current tasks
@@ -686,15 +758,17 @@ def handle_tasks(tasks, token):
     handler = globals()[handlers.get(task['type'], 'handle_unknown_task')]
     try:
       # Dispatch the task to the appropriate handler
-      future_tasks.extend(handler(task, gcal, token))
+      future_tasks.extend(handler(task, gcal, token, l))
     except Exception, err:
       # Catch any exception, this is to stop Google retrying the task like mad
       logging.error('Handler for ' + task['type'] + ' Failed!\n' +
                     'Error: ' + str(err) + '\n' +
-                    'Task: ' + str(task))
+                    'Task: ' + str(task) + '\n' +
+                    'Locale: ' + str(locale))
+      logging.debug('Error details:' + str(dir(err)))
 
   # Enqueue any future tasks we need to deal with
-  enqueue_tasks(future_tasks, token)
+  enqueue_tasks(future_tasks, token, locale)
 
 def delay_tasks(message="hoooooooooooooolllllld-up! brap brap"):
   """When we receive a 'quota depleated' error we need to put everything on
@@ -704,13 +778,13 @@ def delay_tasks(message="hoooooooooooooolllllld-up! brap brap"):
   tomorrow = datetime.today() + timedelta(days=1)
   set_flag('next-task-run-date', tomorrow.strftime('%Y-%m-%dT%H:%M:%S.000Z'))
 
-def handle_insert_calendar(task, gcal, token):
+def handle_insert_calendar(task, gcal, token, l):
   """Take an insert calendar task and deal with it. Return a list of tasks to
   perform later or an empty list."""
   logging.info("Adding calendar " + task['title'])
 
   # Check that it doesn't already exist
-  calendar = lookup_calendar(None, task, gcal, token)
+  calendar = lookup_calendar(None, task, gcal, token, l)
   if calendar:
     logging.info("Didn't create calendar " + task['title'] +
                  "because it already exists.")
@@ -718,7 +792,7 @@ def handle_insert_calendar(task, gcal, token):
 
   # OK it doesn't let's add it
   try:
-    new_cal = create_calendar(gcal, task['title'], task['description'])
+    new_cal = create_calendar(gcal, l(task['title']), l(task['description']))
   except (RequestError, DownloadError), err:
     return handle_google_error(err,task)
   else:
@@ -729,7 +803,7 @@ def handle_insert_calendar(task, gcal, token):
     user.put()
     return []
   
-def handle_unknown_task(task, gcal, token):
+def handle_unknown_task(task, gcal, token, l):
   logging.info('Unknown task type "' + task['type'] + '"')
   return []
 
@@ -781,6 +855,7 @@ def fb_connect(facebook_id, facebook_token, permissions):
       if user:
         # They are, let's make sure their Facebook token is up to date
         if facebook_token != user.facebook_token:
+          locale = check_locale(user=user)
           user.facebook_token = facebook_token
           user.put()
       else:
@@ -815,6 +890,7 @@ def facebook_connect(facebook_id, facebook_token, permissions, retrys=5):
 def gcal_connect(user, token):
   """Take a user and a google token parameter. Return a google connection if
   connected or None."""
+  l = translator(user.locale)
   gcal = None
   if user.google_token:
     # Already registered, make sure existing token is valid
@@ -825,23 +901,24 @@ def gcal_connect(user, token):
       gcal = upgrade_google_token(token)
       if gcal:
         # New user, update their shit
-        user.status = 'Connected to Google Calendar.'
+        user.status = l('Connected to Google Calendar.')
         user.google_token = gcal.GetAuthSubToken()
         user.put()
-        enqueue_tasks([{'type': 'new-user'}], user.google_token)
+        enqueue_tasks([{'type': 'new-user'}], user.google_token, user.locale)
   return gcal
 
 def quota_status():
   quota_used_up =  we_gotta_wait()
   if quota_used_up:
-    return ("CalenDerp has used up its Google quota, " +
-            "everything is on hold until " + str(quota_used_up))
+    return (l("CalenDerp has used up its Google quota, %s") % 
+            str(quota_used_up))
 
 def user_connection_status(signed_request, google_token, permissions):
   # Init the vars to pass back
   facebook_connected = False
   google_connected = False
   status = ""
+  locale = None
 
   # Decode the signed_request data from Facebook
   facebook_id, facebook_token = decode_signed_request(signed_request)
@@ -849,10 +926,14 @@ def user_connection_status(signed_request, google_token, permissions):
   error, user = facebook_connect(facebook_id, facebook_token, permissions)
   # Now check results, test Google token too
   if user:
+    locale = user.locale
     status = user.status
     facebook_connected = True
     if gcal_connect(user, google_token):
       google_connected = True
+
+  l = translator(locale)
+
   # Finaly return something simple for the view to use
-  return {'google': google_connected, 'error': error,
+  return {'google': google_connected, 'error': error, 'l': l,
           'facebook': facebook_connected, 'status': quota_status() or status}

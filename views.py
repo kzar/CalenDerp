@@ -12,10 +12,13 @@
 # 
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
-import config, calenderp, logging, os, facebook
+import config, calenderp, logging, os, facebook,sys
 from django.utils import simplejson as json
 from google.appengine.ext import webapp
-from google.appengine.ext.webapp import template
+
+# Import mako for more sensible templates
+sys.path.insert(0, 'mako.zip')
+from mako.template import Template
 
 class worker(webapp.RequestHandler):
   """Handles /worker requests which processes the work from task queue"""
@@ -23,13 +26,14 @@ class worker(webapp.RequestHandler):
     # Grab the parameters
     tasks = json.loads(self.request.get("tasks"))
     token = self.request.get("token")
+    locale = self.request.get("locale")
 
     if calenderp.we_gotta_wait():
       # Quota is used up, stall everything
-      calenderp.enqueue_tasks(tasks, token)
+      calenderp.enqueue_tasks(tasks, token, locale)
     else: 
       # Good to go, do the work!
-      calenderp.handle_tasks(tasks, token)
+      calenderp.handle_tasks(tasks, token, locale)
     
 class refresh(webapp.RequestHandler):
   def get(self):
@@ -77,6 +81,9 @@ class MainPage(webapp.RequestHandler):
                                         display="page")
       args = {'install_link': install_link}
       page = 'templates/install.html' 
-    # Either way render the page :)
-    path = os.path.join(os.path.dirname(__file__), page);
-    self.response.out.write(template.render(path, args))
+    
+    # Now render the page :)
+    args['l'] = connection_status['l']
+    template = Template(filename=page)
+    self.response.out.write(template.render(**args))
+
