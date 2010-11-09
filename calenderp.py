@@ -706,14 +706,14 @@ def lang_get(s, locale, lang):
     return locale
   # No lang, just log and return
   if not lang:
-    logging.error("No match for '" + s + "' in locale '" + locale + "'")
+    #logging.error("No match for '" + s + "' in locale '" + locale + "'")
     return s
   # Grab the result from the language dictionary
   if lang:
     result = lang.get(s,None)
     if not result:
       # No result, just return the un-translated string but log the failure
-      logging.error("No match for '" + s + "' in locale '" + locale + "'")
+      #logging.error("No match for '" + s + "' in locale '" + locale + "'")
       return s
     else:
       # Successful translation

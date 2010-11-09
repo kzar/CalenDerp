@@ -1,4 +1,31 @@
 languages = {'en_PZ': {'example': 'yakismash!'},
              'en_Bob': {'example': 'mmmbob example'}}
 
-             
+# This is a list of the phrases that I need to get translated
+"Not connected to Google"
+"You're not currently connected to Google calendar, click the button below to connect and create your Facebook calendars."
+"CONNECT TO GOOGLE"
+"This application lets you put your friends birthdays into Google Calendar."
+"Features"
+"Puts your birthdays into Google Calendar."
+"Puts events you're attending into Google Calendar."
+"It actually works."
+"Connected to Google"
+"You're connected to Google calendar, things should start appearing in your calendar soon. (Make sure to refresh your calendar if you don't notice anything.)"
+"Current status"
+"We dun goofed!"
+"Something went wrong, please refresh the page!"
+"%s's Birthday"
+"Facebook connection broken."
+"Last updated: %s"
+"Connected to Google Calendar."
+"Birthdays"
+"Facebook friend birthdays"
+"Events"
+"Facebook events"
+"This application lets you put your friends birthdays into Google Calendar."
+"Features"
+"Puts your birthdays into Google Calendar."
+"Puts events you're attending into Google Calendar."
+"It actually works."
+"I ACCIDENTALLY Install App?"

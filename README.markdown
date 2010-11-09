@@ -16,8 +16,8 @@ Todo
  - Centralise Facebook query error handling
  - Add all the Google Data errors to config.py
  - Process requests to the Google Calendar API in batches, hopefully keeping us within quotas.
- - Make status page a lot clearer, explain what's happening better.
  - Add translations for different languages
+ - Figure out how to get locale for user before they have installed the Facebook application, that will let us display install.html in their native language.
 
 License
 -------
