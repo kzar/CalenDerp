@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import os, sys, re, facebook, logging, config, translations
+import os, sys, re, facebook, logging, config, translations, traceback
 from google.appengine.api import users, urlfetch
 from google.appengine.api.labs import taskqueue
 from google.appengine.ext import db
@@ -62,7 +62,7 @@ def parse_google_error(err):
   # What about these?! apiproxy_errors.OverQuotaError:
 
   # Log the error
-  logging.error("Google error: " + str(err))
+  logging.debug("Google error: " + str(err))
 
   # I have no example of a quota error so I'll bodge this check for now:
   if 'quota' in str(err):
@@ -75,18 +75,14 @@ def parse_google_error(err):
   error_message = err[0]['body']
   error_reason = err[0]['reason']
 
-  # Make a dict of errors to check against (error's reason is more specific
-  # but fall back to the error code)
+  # Make a dict of errors to check against 
+  # (Have to use reason, status code not specic enough :-( )
   error_lookup = {}
   for e in config.GOOGLE_ERRORS:
     error_lookup[e['reason']] = e
-    error_lookup[e['code']] = e
 
   # Lookup the error's reason, this tells us exactly what to do
   match = error_lookup.get(error_reason, None)
-  if not match:
-    logging.error('Received unknown error reason "' + error_reason + '"')
-    match = error_lookup.get(error_code, None)
   
   # If we know what to do tell them, if not give up
   if match:
@@ -114,6 +110,8 @@ def handle_google_error(err, task):
     return [task]
   if action == 'give-up':
     return []
+  if action == 'remove-google-token':
+    return [{'type': 'remove-google-token'}]
 
 def set_flag(key, value):
   """Set a flag in the datastore's value."""
@@ -584,30 +582,38 @@ def handle_updateevents(task, gcal, token, l):
   anything new and returns a list of tasks to make the needed changes."""
   logging.info('Checking for events to update')
   # Grab the calendar link
-  calendar = lookup_calendar(task.get('calendar'), config.EVENT_CALENDAR,
-                             gcal, token, l)
-  # We can't update a calendar that doesn't exist
-  if not calendar:
-    return [dict({'type': 'insert-calendar'}, **config.EVENT_CALENDAR), task]
+  try:
+    calendar = lookup_calendar(task.get('calendar'), config.EVENT_CALENDAR,
+                               gcal, token, l)
+  except (RequestError, DownloadError), err:
+    return handle_google_error(err,task)
+  else:
+    # We can't update a calendar that doesn't exist
+    if not calendar:
+      return [dict({'type': 'insert-calendar'}, **config.EVENT_CALENDAR), task]
 
-  # It's there, update and return the results
-  return update_data(token, grab_events, 
-                     format_eventtask, 'events', calendar, l)
+    # It's there, update and return the results
+    return update_data(token, grab_events, 
+                       format_eventtask, 'events', calendar, l)
   
 def handle_updatebirthdays(task, gcal, token, l):
   """This updates the users birthdays. It returns a list of tasks needed
   to be completed to bring the user's birthday calendar up to date."""
   logging.info('Checking for birthdays to update')
   # Grab the calendar link
-  calendar = lookup_calendar(task.get('calendar'), config.BIRTHDAY_CALENDAR,
-                             gcal, token, l)
-  # We can't update a calendar that doesn't exist
-  if not calendar:
-    return [dict({'type': 'insert-calendar'}, **config.BIRTHDAY_CALENDAR), task]
-
-  # It's there, update and return the results
-  return update_data(token, grab_birthdays, format_birthdaytask, 
-                     'birthdays', calendar, l)
+  try:
+    calendar = lookup_calendar(task.get('calendar'), config.BIRTHDAY_CALENDAR,
+                               gcal, token, l)
+  except (RequestError, DownloadError), err:
+    return handle_google_error(err,task)
+  else:    
+    # We can't update a calendar that doesn't exist
+    if not calendar:
+      return [dict({'type': 'insert-calendar'}, **config.BIRTHDAY_CALENDAR),
+              task]
+    # It's there, update and return the results
+    return update_data(token, grab_birthdays, format_birthdaytask, 
+                       'birthdays', calendar, l)
 
 def handle_insert_event(task, gcal, token, l):
   """Take an insert event task and deal with it. Return a list of tasks to
@@ -651,6 +657,18 @@ def handle_update_event(task, gcal, token, l):
         return handle_google_error(err, task)
   else:
     logging.error("Couldn't find event to update:" + task['fb_id'])
+  return []
+
+
+def handle_removegoogle(task, gcal, token, l):
+  """Task handler to delete a user's google token. Used when it's no longer
+  working."""
+  user = Users.all().filter("google_token = ", token).get()
+  if (user):
+    user.google_token = None
+    user.status = "Google token expired."
+    user.put()
+    logging.info("Removed Google token for " + str(user.facebook_id))
   return []
 
 def handle_remove_event(task, gcal, token, l):
@@ -751,7 +769,8 @@ def handle_tasks(tasks, token, locale):
               'remove-event': 'handle_remove_event',
               'new-user': 'handle_newuser_event',
               'update-birthdays': 'handle_updatebirthdays',
-              'update-events': 'handle_updateevents'}
+              'update-events': 'handle_updateevents',
+              'remove-google-token': 'handle_removegoogle'}
 
   # Deal with the tasks
   for task in tasks:
@@ -766,6 +785,7 @@ def handle_tasks(tasks, token, locale):
                     'Task: ' + str(task) + '\n' +
                     'Locale: ' + str(locale))
       logging.debug('Error details:' + str(dir(err)))
+      logging.debug('Traceback: ' + str(traceback.format_stack()))
 
   # Enqueue any future tasks we need to deal with
   enqueue_tasks(future_tasks, token, locale)

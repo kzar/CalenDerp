@@ -23,4 +23,9 @@ GOOGLE_ERRORS = [{'code': '302L',
                  {'code': '403L',
                   'reason': 'Non 200 response on upgrade',
                   'action': 'give-up',
-                  'explanation': 'Failed to setup token, user not authed.'}]
+                  'explanation': 'Failed to setup token, user not authed.'},
+                 {'code': '403L',
+                  'reason': 'Forbidden',
+                  'body': 'You must be a calendar user to use private feeds.',
+                  'action': 'remove-google-token',
+                  'explanation': 'Google token broken, removing it.'}]
