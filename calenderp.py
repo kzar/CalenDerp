@@ -189,18 +189,26 @@ def parse_date(date, tz=None):
 def grab_events(user):
   """Take a user and return a list of their events."""
   # I'm deliberately keeping this simple for now
-  # (Does not return past events, only returns
-  # events they are attending, is limited to one page of results.)
+  # (Does not return past events, only returns events they are or attendind 
+  #  or maybe attending, is limited to one page of results.)
   graph = facebook.GraphAPI(user.facebook_token)
   
-  fields = "name,id,location,start_time,end_time,description"
-  events = graph.get_object("me/events/attending", fields=fields)
+  ## Todo
+  # The event description is too long really, it would be better to query for
+  # this when adding the event rather than storing it and passing it through
+  # the event queue.
 
-  today = datetime.today()
+  fields = "name,id,location,start_time,end_time,description"
+  attending = graph.get_object("me/events/attending", fields=fields)
+  maybe = graph.get_object("me/events/maybe", fields=fields)
+  events = attending['data'] + maybe['data']
+
+  today = datetime.now(UTC())
   results = []
-  for event in events['data']:
+
+  for event in events:
     try: 
-      if parse_date(event['end_time']) > today:
+      if parse_date(event['end_time'], PT()) > today:
         results.append({'name': event['name'],
                         'content': event.get('description', ''),
                         'start': event['start_time'],
@@ -398,7 +406,7 @@ def format_extended_dict(d):
     output += '[' + str(k) + ':' + str(v) + ']'
   return output
 
-def find_event(gcal, calendar, search_term=None, extended=None):
+def find_event(gcal, calendar, task, search_term=None, extended=None):
   """Searches the given calendar for the search text. 
   Returns the results and a list of any further tasks that need to be done."""
   # Set up the search query
@@ -419,9 +427,7 @@ def find_event(gcal, calendar, search_term=None, extended=None):
   try: 
     results = gcal.CalendarQuery(query).entry
   except (DownloadError, RequestError), err:
-    # Error running the search, retry
-    logging.error('Received error when searching, retrying.')
-    return [], True
+    return [], handle_google_error(err,task)
   except IndexError:
     # No matches
     logging.info('Coudln\'t find event ' + (search_term or str(params)))
@@ -438,7 +444,11 @@ def handle_newuser_event(task, gcal, token, l):
           {'type': 'update-events'},
           {'type': 'update-birthdays'}]
 
-def diff_data(new_data, old_data, calendar, format_task_function, l):
+def event_not_in_past(entry):
+  return parse_date(entry['end'], PT()) > datetime.now(UTC())
+
+def diff_data(new_data, old_data, calendar, format_task_function, l, 
+              delete_check=lambda entry: True):
   """Take a list of new and old data, check for differences and return
   a list of tasks needed to be performed to bring things up to date."""
   # Python requires we set this up in advance
@@ -458,8 +468,11 @@ def diff_data(new_data, old_data, calendar, format_task_function, l):
   new_data_ids = [b['id'] for b in new_data]
   for old_entry in old_data:
     if not list_contains(old_entry['id'], new_data_ids):
-      # Delete entry
-      tasks.append(format_task_function(old_entry, 'remove-event', calendar, l))
+      # Check it matches our checking function
+      if delete_check(old_entry):
+        # Delete entry
+        tasks.append(format_task_function(old_entry, 
+                                          'remove-event', calendar, l))
 
   # Make a dict out of the old data so we can look records up quickly
   old_data_dict = {}
@@ -479,8 +492,8 @@ def diff_data(new_data, old_data, calendar, format_task_function, l):
     
   return tasks
 
-def update_data(google_token, grab_function, format_function, 
-                datastore_key, calendar, l):
+def update_data(google_token, grab_function, format_function, datastore_key, 
+                calendar, l, delete_check=lambda entry: True):
   """Take all the details needed to update a user's data. This is kept generic
   so we can use it to update both birthdays and events. Return a list of tasks
   that need to be carried out to perform the update."""
@@ -508,10 +521,11 @@ def update_data(google_token, grab_function, format_function,
   old_data = getattr(user,datastore_key)
   if old_data:
     old_data = json.loads(old_data)    
-  
+
   # Check for changes
-  changes = diff_data(data, old_data, calendar, format_function, l)
-  
+  changes = diff_data(data, old_data, calendar, format_function, l, 
+                      delete_check)
+
   if changes:
     # Record their new data in the datastore
     logging.info('We found ' + str(len(changes)) + ' to make. Adding tasks')
@@ -581,6 +595,10 @@ def handle_updateevents(task, gcal, token, l):
   """This updates the user's events. It grabs the latest events, checks for 
   anything new and returns a list of tasks to make the needed changes."""
   logging.info('Checking for events to update')
+  
+  # TODO
+  # Track down Application error 5 that's coming from this task handler somewhere 
+  
   # Grab the calendar link
   try:
     calendar = lookup_calendar(task.get('calendar'), config.EVENT_CALENDAR,
@@ -593,8 +611,8 @@ def handle_updateevents(task, gcal, token, l):
       return [dict({'type': 'insert-calendar'}, **config.EVENT_CALENDAR), task]
 
     # It's there, update and return the results
-    return update_data(token, grab_events, 
-                       format_eventtask, 'events', calendar, l)
+    return update_data(token, grab_events, format_eventtask, 'events', 
+                       calendar, l, event_not_in_past)
   
 def handle_updatebirthdays(task, gcal, token, l):
   """This updates the users birthdays. It returns a list of tasks needed
@@ -634,12 +652,12 @@ def handle_update_event(task, gcal, token, l):
   """Take an update event task and deal with it. Return a list of tasks to
   perform later or an empty list."""
   # Find the event
-  events, search_failed = find_event(gcal, task['calendar'], 
+  events, search_failed = find_event(gcal, task['calendar'], task,
                                      extended={'+fb_id+':task['fb_id']})
   
-  # Search for event failed, we should retry
-  if search_failed:
-    return [task]
+  # Search for event failed, return new tasks to be queued
+  if search_failed != False:
+    return search_failed
 
   if events:
     for event in events:
@@ -675,12 +693,12 @@ def handle_remove_event(task, gcal, token, l):
   """Take a update event task and deal with it. Return a list of tasks to
   perform later or an empty list."""
   # Find the event to remove
-  events, search_failed = find_event(gcal, task['calendar'], 
+  events, search_failed = find_event(gcal, task['calendar'], task,
                                      extended={'+fb_id+':task['fb_id']})
 
-  # Search for event failed, we should retry
-  if search_failed:
-    return [task]
+  # Search for event failed, return tasks to run instead
+  if search_failed != False:
+    return search_failed
 
   if events:
     for event in events:
@@ -838,7 +856,7 @@ def check_facebook_scope(permissions, token=None, graph=None):
   query = 'SELECT ' + scope + ' FROM permissions WHERE uid=me()'
   results = graph.fql(query)
   # If we have results return them
-  if results and len(results):
+  if results and len(results) and type(results).__name__ == 'list':
     return [k for k in results[0] if results[0][k]]
   else:
     return []
@@ -875,7 +893,7 @@ def fb_connect(facebook_id, facebook_token, permissions):
       if user:
         # They are, let's make sure their Facebook token is up to date
         if facebook_token != user.facebook_token:
-          locale = check_locale(user=user)
+          user.locale = check_locale(user=user)
           user.facebook_token = facebook_token
           user.put()
       else:
@@ -939,6 +957,10 @@ def user_connection_status(signed_request, google_token, permissions):
   google_connected = False
   status = ""
   locale = None
+
+  # Todo
+  # Fix problems installing a few users are having.
+  # (Somehow facebook_connect is not returning a user when really it should.)
 
   # Decode the signed_request data from Facebook
   facebook_id, facebook_token = decode_signed_request(signed_request)

@@ -12,6 +12,11 @@ EVENT_CALENDAR = {'title': 'Events', 'link_key': 'event_cal',
 
 GOOGLE_QUERY_RETRYS = 5
 
+FACEBOOK_ERRORS = [{'error_code': 190, 
+                    'error_msg': 'Invalid OAuth 2.0 Access Token',
+                    'explanation': 'Fucked Facebook token',
+                    'action': 'remove-facebook-token'}]
+
 GOOGLE_ERRORS = [{'code': '302L', 
                   'reason': 'Redirect received, but redirects_remaining <= 0',
                   'action': 'retry',
@@ -28,4 +33,9 @@ GOOGLE_ERRORS = [{'code': '302L',
                   'reason': 'Forbidden',
                   'body': 'You must be a calendar user to use private feeds.',
                   'action': 'remove-google-token',
-                  'explanation': 'Google token broken, removing it.'}]
+                  'explanation': 'Google token broken, removing it.'},
+                 {'code': '500L',
+                  'reason': 'Internal Server Error',
+                  'body': 'Service error: could not insert entry',
+                  'action': 'retry',
+                  'explanation': 'Google dun goofed, retry!'}]

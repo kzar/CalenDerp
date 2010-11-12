@@ -44,6 +44,9 @@ class refresh(webapp.RequestHandler):
       # Good to go, refresh those calendars!
       logging.info("Refreshing everyone's calendars!")
       calenderp.refresh_everyones_calendars()
+
+def marko_unicode_fixer(f):
+  return lambda s: f(s).encode("utf-8")
       
 class MainPage(webapp.RequestHandler):
   def get(self):
@@ -85,5 +88,6 @@ class MainPage(webapp.RequestHandler):
     # Now render the page :)
     args['l'] = connection_status['l']
     template = Template(filename=page)
-    self.response.out.write(template.render(**args))
+    render = template.render_unicode(**args)
+    self.response.out.write(render)
 
