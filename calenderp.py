@@ -804,6 +804,7 @@ def handle_tasks(tasks, token, locale):
                     'Locale: ' + str(locale))
       logging.debug('Error details:' + str(dir(err)))
       logging.debug('Traceback: ' + str(traceback.format_stack()))
+      logging.debug('Traceback: ' + str(traceback.format_exc()))
 
   # Enqueue any future tasks we need to deal with
   enqueue_tasks(future_tasks, token, locale)
