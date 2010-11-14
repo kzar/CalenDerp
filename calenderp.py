@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import os, sys, re, facebook, logging, config, translations, traceback
+import os, sys, re, facebook, logging, config, translations, traceback, errors
 from google.appengine.api import users, urlfetch
 from google.appengine.api.labs import taskqueue
 from google.appengine.ext import db
