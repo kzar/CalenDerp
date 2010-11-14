@@ -582,7 +582,7 @@ def list_calendars(gcal):
   feed = gcal.GetOwnCalendarsFeed()
   for i, calendar in enumerate(feed.entry):
     description = str(calendar.summary and calendar.summary.text)
-    calendars.append({'title': calendar.title.text,
+    calendars.append({'title': (calendar.title and calendar.title.text) or " ",
                       'description': description,
                       'link': calendar.GetAlternateLink().href})
   return calendars
