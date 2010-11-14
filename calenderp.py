@@ -724,7 +724,7 @@ def handle_removegoogle(task, gcal, token, l):
   user = Users.all().filter("google_token = ", token).get()
   if (user):
     user.google_token = None
-    user.status = "Google token expired."
+    user.status = l("Google token expired.")
     user.put()
     logging.info("Removed Google token for " + str(user.facebook_id))
   return []
@@ -952,7 +952,7 @@ def facebook_connect(facebook_id, facebook_token, permissions):
       user = Users(facebook_id=facebook_id,
                    facebook_token=facebook_token,
                    locale=locale,
-                   status='Connected to Facebook.')
+                   status=l('Connected to Facebook.'))
       user.put()
   return user, False
 
