@@ -19,6 +19,7 @@ Todo
  - Figure out why some users are constantly shown the install page, what's wrong with the facebook_connect code
  - Make sure the translator function is being set properly everywhere, status updates aren't being translated ATM
  - Investigate Google Calendar timezones, I'm giving it UTC time but apparently that's not being converted their end
+ - Only store a hash of event descriptions because they are far too long.
 
 License
 -------
