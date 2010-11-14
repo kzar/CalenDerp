@@ -10,11 +10,15 @@ EVENT_CALENDAR = {'title': 'Events', 'link_key': 'event_cal',
                   'data_key': 'events',
                   'description': 'Facebook events'}
 
-GOOGLE_QUERY_RETRYS = 5
+QUERY_RETRYS = 5
 
-FACEBOOK_ERRORS = [{'error_code': 190, 
-                    'error_msg': 'Invalid OAuth 2.0 Access Token',
-                    'explanation': 'Fucked Facebook token',
+FACEBOOK_ERRORS = [{'code': 190, 
+                    'reason': 'Invalid OAuth 2.0 Access Token',
+                    'explanation': 'Facebook token broken, removing it.',
+                    'action': 'remove-facebook-token'},
+                   {'code': 'OAuthException',
+                    'reason': 'Invalid OAuth access token.',
+                    'explanation': 'Facebook token broken, removing it.',
                     'action': 'remove-facebook-token'}]
 
 GOOGLE_ERRORS = [{'code': '302L', 
@@ -38,4 +42,19 @@ GOOGLE_ERRORS = [{'code': '302L',
                   'reason': 'Internal Server Error',
                   'body': 'Service error: could not insert entry',
                   'action': 'retry',
-                  'explanation': 'Google dun goofed, retry!'}]
+                  'explanation': 'Google dun goofed, retry!'},
+                 {'reason': 'ApplicationError: 1',
+                  'action': 'give-up',
+                  'explanation': 'URL fetch was given an invalid URL!'},
+                 {'reason': 'ApplicationError: 2',
+                  'action': 'give-up',
+                  'explanation': 'URL fetch failed.'},
+                 {'reason': 'ApplicationError: 3',
+                  'action': 'give-up',
+                  'explanation': 'URL fetch gave "UNSPECIFIED ERROR"?!'},
+                 {'reason': 'ApplicationError: 4',
+                  'action': 'give-up',
+                  'explanation': 'URL gave "RESPONSE TOO LARGE"?!'},
+                 {'reason': 'ApplicationError: 5',
+                  'action': 'retry',
+                  'explanation': 'URL fetch timed out, retry.'}]

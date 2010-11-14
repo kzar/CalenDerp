@@ -56,34 +56,19 @@ class Flags(db.Model):
   flag_key = db.StringProperty(required=True)
   value = db.StringProperty(required=True)
 
-def parse_google_error(err):
-  """Take a Google error and return an action like 'retry' or 'give-up' based
-  on the error. Still needs work."""
-  # What about these?! apiproxy_errors.OverQuotaError:
-
-  # Log the error
-  logging.debug("Google error: " + str(err))
-
-  # I have no example of a quota error so I'll bodge this check for now:
-  if 'quota' in str(err):
-    logging.error('QUOTA ERROR!!')
-    delay_tasks()
-    return 'retry'
-
-  # Get the error's details from the exception object
-  error_code = err[0]['status']
-  error_message = err[0]['body']
-  error_reason = err[0]['reason']
-
-  # Make a dict of errors to check against 
-  # (Have to use reason, status code not specic enough :-( )
+def parse_error(message, error, errors_list, error_index_key):
+  """Takes an error and a list of errors e.g. the Google errors and returns the
+  appropriate action to take. Also logs some details for debugging."""
+  # Log some details for debugging
+  logging.debug(message)
+  logging.debug(str(error))
+  logging.debug('Traceback: ' + str(traceback.format_exc()))
+  # Create a lookup table from our errors list
   error_lookup = {}
-  for e in config.GOOGLE_ERRORS:
-    error_lookup[e['reason']] = e
-
-  # Lookup the error's reason, this tells us exactly what to do
-  match = error_lookup.get(error_reason, None)
-  
+  for e in errors_list:
+    error_lookup[e[error_index_key]] = e
+  # Lookup the error
+  match = error_lookup.get(error[error_index_key], None)  
   # If we know what to do tell them, if not give up
   if match:
     logging.info(match['explanation'])
@@ -92,17 +77,43 @@ def parse_google_error(err):
     logging.error('Can\'t handle this error properly, it\'s unknown!')    
     return 'give-up'
 
-def handle_google_error(err, task):
-  """Helper function to make handling Google errors within handlers easier.
-  Takes an error and the task being processed and returns a list of tasks to
-  perform."""
-  # First make sure there are any retrys left for the task
-  retrys = task.get('retrys', config.GOOGLE_QUERY_RETRYS)
+def parse_facebook_error(err):
+  """Take a Facebook error and return an action like 'retry' or 'give-up' based
+  on the error's contents."""
+  return parse_error("Facebook Error", 
+                     {'code': err.type, 'reason': err.message},
+                     config.FACEBOOK_ERRORS, 'code')
+
+def parse_google_error(err):
+  """Take a Google error and return an action like 'retry' or 'give-up' based
+  on the error."""
+  # It's a Google data RequestError
+  if type(err[0]).__name__ == 'dict':
+    error = {'code': err[0]['status'], 
+             'message': err[0]['body'],
+             'reason': err[0]['reason']}
+  # It's a urlfetch DownloadError
+  else:
+    error = {'reason': err.message.strip()}
+  # Now deal with it    
+  return parse_error("Google Error", error, config.GOOGLE_ERRORS, 'reason')
+
+def handle_error(task, err=None, parser=None, action=None):
+  """Helper function to make handling Google + Facebook errors within task 
+  handlers easier. Takes an error and the task being processed and returns 
+  a list of tasks to perform."""
+  # First make sure there really is an error!
+  if not err:
+    return [{}]
+  # Next make sure there are any retrys left for the task
+  retrys = task.get('retrys', config.QUERY_RETRYS)
   if (retrys < 1):
     logging.error('We ran out of retrys for this task!')
     return []
   # Now figure out what action should be taken
-  action = parse_google_error(err)  
+  # (This might already be set if we've already parsed the error)
+  if not action:
+    action = parser(err)
   # OK now do it..
   if action == 'retry':
     logging.info(str(retrys) + ' retrys left.')
@@ -112,6 +123,32 @@ def handle_google_error(err, task):
     return []
   if action == 'remove-google-token':
     return [{'type': 'remove-google-token'}]
+  if action == 'remove-facebook-token':
+    return [{'type': 'remove-facebook-token'}]
+
+def tackle_retrys(f, return_error=False, retrys=config.QUERY_RETRYS):
+  """Take a function that conforms to the "result, parsed_error" format and 
+  keep running it 'till we need to give up or have a result. Used when we need
+  to tackle an error head on instead of adding another task to the queue."""
+  # Setup return_f function so we can strip error from returns easily
+  if return_error:
+    return_f = lambda a, b: (a, b)
+  else:
+    return_f = lambda a, b: a
+  # Run out of retrys, fail
+  if retrys < 1:
+    return return_f(None, True)
+  # Grab the results
+  result, parsed_error = f()
+  # Success, return results
+  if parsed_error == False:
+    return return_f(result, False)
+  # Failure, retry
+  if parsed_error == 'retry':
+    return tackle_retrys(f, retrys - 1)
+  # Failure, give up!
+  if parsed_error == 'give-up':
+    return return_f(None, True)
 
 def set_flag(key, value):
   """Set a flag in the datastore's value."""
@@ -161,9 +198,12 @@ def grab_birthdays(user):
   """Take a user and return a list of their birthdays"""
   graph = facebook.GraphAPI(user.facebook_token)
   
-  friends = graph.get_object("me/friends", fields="link,birthday,name,picture")
+  try:
+    friends = graph.get_object("me/friends", 
+                               fields="link,birthday,name,picture")
+  except (urlfetch.Error, GraphAPIError), err:
+    return [], parse_facebook_error(err)
 
-  # I really do not like this block of code :(
   results = []
   for friend in friends['data']:
     try:
@@ -175,7 +215,7 @@ def grab_birthdays(user):
                       'month': month})
     except TypeError:
       pass
-  return results
+  return results, False
 
 def parse_date(date, tz=None):
   """Takes an ISO date string, parses it and returns a datetime object."""
@@ -199,8 +239,12 @@ def grab_events(user):
   # the event queue.
 
   fields = "name,id,location,start_time,end_time,description"
-  attending = graph.get_object("me/events/attending", fields=fields)
-  maybe = graph.get_object("me/events/maybe", fields=fields)
+  try:
+    attending = graph.get_object("me/events/attending", fields=fields)
+    maybe = graph.get_object("me/events/maybe", fields=fields)
+  except (urlfetch.Error, GraphAPIError), err:
+    return [], parse_facebook_error(err)
+
   events = attending['data'] + maybe['data']
 
   today = datetime.now(UTC())
@@ -217,7 +261,7 @@ def grab_events(user):
                         'location': event.get('location', '')})
     except TypeError:
       pass
-  return results
+  return results, False
 
 def GetAuthSubUrl(url):
   scope = 'http://www.google.com/calendar/feeds/'
@@ -307,35 +351,43 @@ def format_eventtask(event, task_type, calendar, l):
           'fb_id': event['id'], 'location': event['location']}
 
 
-def check_locale(user=None, google_token=None):
+def check_locale(user=None, google_token=None, facebook_token=None):
   """Take a google token, look up the user and return the locale. If we don't
   know their locale yet then ask Facebook and record it."""
   logging.info('Checking user\'s locale.')
-  if not user:    
-    user = Users.all().filter("google_token = ", google_token)[0]
+  if not user:
+    if google_token:
+      user = Users.all().filter("google_token = ", google_token).get()
+    elif facebook_token:
+      user = Users.all().filter("facebook_token = ", facebook_token).get()
+  if not user:
+    return None, 'give-up'
 
   # Check we don't already know user's locale
   if user.locale:
-    return user.locale
+    return user.locale, False
   else:
     # We don't so ask Facebook
     graph = facebook.GraphAPI(user.facebook_token)  
-    results = graph.get_object("me", fields='locale')
-    
+    try:
+      results = graph.get_object("me", fields='locale')
+    except (urlfetch.Error, GraphAPIError), err:
+      return None, parse_facebook_error(err)
+
     locale = results['locale']
     if locale:
       # We know now, record in database
       logging.info('Locale updated')
       user.locale = locale
       user.put()     
-    return locale
+    return locale, False
 
 def enqueue_tasks(updates, token, locale, chunk_size=5):
   """Take a list of updates and add them to the Task Queue."""
   # Make sure we've got their locale
   if not locale:
-    locale = check_locale(google_token=token)
-
+    locale = tackle_retrys(lambda: check_locale(google_token=token))
+    
   # Makes sure the task queue really does wait if we're outa quota
   run_date = parse_date(get_flag('next-task-run-date'))
   if run_date and run_date > datetime.today():
@@ -427,7 +479,7 @@ def find_event(gcal, calendar, task, search_term=None, extended=None):
   try: 
     results = gcal.CalendarQuery(query).entry
   except (DownloadError, RequestError), err:
-    return [], handle_google_error(err,task)
+    return [], handle_error(task, err, parse_google_error)
   except IndexError:
     # No matches
     logging.info('Coudln\'t find event ' + (search_term or str(params)))
@@ -492,32 +544,23 @@ def diff_data(new_data, old_data, calendar, format_task_function, l,
     
   return tasks
 
-def update_data(google_token, grab_function, format_function, datastore_key, 
-                calendar, l, delete_check=lambda entry: True):
+def update_data(task, google_token, grab_function, format_function, 
+                datastore_key, calendar, l, delete_check=lambda entry: True):
   """Take all the details needed to update a user's data. This is kept generic
   so we can use it to update both birthdays and events. Return a list of tasks
   that need to be carried out to perform the update."""
   # Find the user in the database
-  user = Users.all().filter("google_token =", google_token)[0]
+  user = Users.all().filter("google_token =", google_token).get()
 
   # Make sure there's a Facebook token!
   if not user.facebook_token:
-    return []
+    return handle_error(task, action='give-up')
 
   # Grab the data from Facebook
-  try:
-    data = grab_function(user)
-  except GraphAPIError, err:
-    if 'access token' in str(err): 
-      logging.info('User\'s Facebook token expired, clearing it.')
-      user.facebook_token = ""
-      user.status = l("Facebook connection broken.")
-      user.put()
-      return []
-    else:
-      logging.info('Some error doing Facebook query:' + str(err))
-      return []
-
+  data, parsed_error  = grab_function(user)
+  if parsed_error != False:
+    return handle_error(task, action=parsed_error)
+    
   old_data = getattr(user,datastore_key)
   if old_data:
     old_data = json.loads(old_data)    
@@ -580,7 +623,7 @@ def lookup_calendar(calendar_link, details, gcal, token, l):
   a google calendar connection + token. Use the link given if it exists,
   otherwise take the link from the datastore. Now make sure the calendar still
   exists and is up to date. Return the calendar link or None."""
-  user = Users.all().filter("google_token = ", token)[0]
+  user = Users.all().filter("google_token = ", token).get()
   calendar = calendar_link or getattr(user, details['link_key'])
   calendar, needs_updating = find_calendar(list_calendars(gcal), l, 
                                            link=calendar, **ascii_keys(details))
@@ -595,24 +638,21 @@ def handle_updateevents(task, gcal, token, l):
   """This updates the user's events. It grabs the latest events, checks for 
   anything new and returns a list of tasks to make the needed changes."""
   logging.info('Checking for events to update')
-  
-  # TODO
-  # Track down Application error 5 that's coming from this task handler somewhere 
-  
   # Grab the calendar link
   try:
     calendar = lookup_calendar(task.get('calendar'), config.EVENT_CALENDAR,
                                gcal, token, l)
   except (RequestError, DownloadError), err:
-    return handle_google_error(err,task)
+    return handle_error(task, err, parse_google_error)
   else:
     # We can't update a calendar that doesn't exist
     if not calendar:
       return [dict({'type': 'insert-calendar'}, **config.EVENT_CALENDAR), task]
 
     # It's there, update and return the results
-    return update_data(token, grab_events, format_eventtask, 'events', 
-                       calendar, l, event_not_in_past)
+    return update_data(task, token, grab_events, format_eventtask, 
+                       'events', calendar, l, event_not_in_past)
+    
   
 def handle_updatebirthdays(task, gcal, token, l):
   """This updates the users birthdays. It returns a list of tasks needed
@@ -623,14 +663,14 @@ def handle_updatebirthdays(task, gcal, token, l):
     calendar = lookup_calendar(task.get('calendar'), config.BIRTHDAY_CALENDAR,
                                gcal, token, l)
   except (RequestError, DownloadError), err:
-    return handle_google_error(err,task)
+    return handle_error(task, err, parse_google_error)
   else:    
     # We can't update a calendar that doesn't exist
     if not calendar:
       return [dict({'type': 'insert-calendar'}, **config.BIRTHDAY_CALENDAR),
               task]
     # It's there, update and return the results
-    return update_data(token, grab_birthdays, format_birthdaytask, 
+    return update_data(task, token, grab_birthdays, format_birthdaytask, 
                        'birthdays', calendar, l)
 
 def handle_insert_event(task, gcal, token, l):
@@ -646,7 +686,7 @@ def handle_insert_event(task, gcal, token, l):
     gcal.InsertEvent(event, task['calendar'])
     return []
   except (DownloadError, RequestError), err:
-    return handle_google_error(err, task)
+    return handle_error(task, err, parse_google_error)
   
 def handle_update_event(task, gcal, token, l):
   """Take an update event task and deal with it. Return a list of tasks to
@@ -672,7 +712,7 @@ def handle_update_event(task, gcal, token, l):
       try:
         gcal.UpdateEvent(edit_link, event)
       except (DownloadError, RequestError), err:
-        return handle_google_error(err, task)
+        return handle_error(task, err, parse_google_error)
   else:
     logging.error("Couldn't find event to update:" + task['fb_id'])
   return []
@@ -706,7 +746,7 @@ def handle_remove_event(task, gcal, token, l):
       try:
         gcal.DeleteEvent(event.GetEditLink().href)  
       except (DownloadError, RequestError), err:
-        return handle_google_error(err, task)
+        return handle_error(task, err, parse_google_error)
   else:
     logging.error("Couldn't find event to delete:" + task['fb_id'])
   return []
@@ -718,12 +758,7 @@ def refresh_everyones_calendars():
   time = datetime.now().strftime('%A %d %B %Y - %X')
   for user in users:
     if user.facebook_token and user.google_token:
-      # Get the locale
-      if not user.locale:
-        locale = check_locale(user=user)
-      else:
-        locale = user.locale
-      l = translator(locale)
+      l = translator(user.locale)
       # Update their status. (I know, a little misleading time-wise.)      
       user.status = l("Last updated: %s") % time
       user.put()
@@ -833,10 +868,10 @@ def handle_insert_calendar(task, gcal, token, l):
   try:
     new_cal = create_calendar(gcal, l(task['title']), l(task['description']))
   except (RequestError, DownloadError), err:
-    return handle_google_error(err,task)
+    return handle_error(task, err, parse_google_error)
   else:
     # Record the calendar in the user's datastore
-    user = Users.all().filter("google_token =", token)[0]      
+    user = Users.all().filter("google_token =", token).get()
     setattr(user, task['link_key'], new_cal.content.src)
     setattr(user, task['data_key'], None)
     user.put()
@@ -855,24 +890,29 @@ def check_facebook_scope(permissions, token=None, graph=None):
   # Craft and run the query
   scope = ",".join(permissions)
   query = 'SELECT ' + scope + ' FROM permissions WHERE uid=me()'
-  results = graph.fql(query)
+  try:
+    results = graph.fql(query)
+  except (urlfetch.Error, GraphAPIError), err:
+    return None, parse_facebook_error(err)
+
   # If we have results return them
   if results and len(results) and type(results).__name__ == 'list':
-    return [k for k in results[0] if results[0][k]]
+    return [k for k in results[0] if results[0][k]], False
   else:
-    return []
+    return [], False
 
 def facebook_scope_is(permissions, token=None, graph=None):
   """Take a list of permissions and return True if they are all present or
   False if they are not. (Ignores extra permissions.)"""
-  actual_permissions = check_facebook_scope(permissions, token=token, 
-                                            graph=graph)
-  logging.info('perm:' + ','.join(actual_permissions))
-  logging.info('needed perm:' + ','.join(permissions))
+  actual_permissions, parsed_error = check_facebook_scope(permissions, 
+                                                          token=token, 
+                                                          graph=graph)
+  if parsed_error != False:
+    return None, parsed_error
   if actual_permissions == permissions:
-    return True
+    return True, False
   else:
-    return False
+    return False, False
 
 def decode_signed_request(signed_request):
   """Take the signed request and return the id and token."""
@@ -883,48 +923,36 @@ def decode_signed_request(signed_request):
   else:
     return None, None
 
-def fb_connect(facebook_id, facebook_token, permissions):
+def facebook_connect(facebook_id, facebook_token, permissions):
   "Take the details from Facebook and return the User object or None"""
   if facebook_id and facebook_token:
     # First check they have all the required permissions
     graph = facebook.GraphAPI(facebook_token)
-    if facebook_scope_is(permissions, graph=graph):
+    needed_perms, parsed_error = facebook_scope_is(permissions, graph=graph)
+    if parsed_error != False:
+      return None, parsed_error
+    if needed_perms:
       # Good now let's see if they are in our database
       user = Users.all().filter("facebook_id =", facebook_id).get()
       if user:
         # They are, let's make sure their Facebook token is up to date
         if facebook_token != user.facebook_token:
-          user.locale = check_locale(user=user)
           user.facebook_token = facebook_token
           user.put()
       else:
         # They aren't in our database, add 'um!
+        locale, parsed_error = check_locale(facebook_token=facebook_token)
+        if parsed_error != False:
+          return None, parsed_error
         user = Users(facebook_id=facebook_id,
                      facebook_token=facebook_token,
+                     locale=locale,
                      status='Connected to Facebook.')
         user.put()
     else:
       # They don't have proper permissions, ignore them!
       user = None
-    return user
-
-def facebook_connect(facebook_id, facebook_token, permissions, retrys=5):
-  """Recursively call fb_connect to connect the user. Catch all errors and log
-  them so that they aren't given to the user. After the retrys are used up 
-  give up and return an error."""
-  if retrys < 1:
-    return True, None
-  else:
-    try:
-      error = False
-      user = fb_connect(facebook_id, facebook_token, permissions)
-    except Exception, err:
-      logging.error('Checking user connection status Failed!\n' + 
-                    'Error: ' + str(err) + 
-                    ' (' + str(retrys) + ' retrys left)')
-      error, user = facebook_connect(facebook_id, facebook_token, 
-                                     permissions, retrys - 1)
-  return error, user
+    return user, False
 
 def gcal_connect(user, token):
   """Take a user and a google token parameter. Return a google connection if
@@ -958,15 +986,19 @@ def user_connection_status(signed_request, google_token, permissions):
   google_connected = False
   status = ""
   locale = None
-
-  # Todo
-  # Fix problems installing a few users are having.
-  # (Somehow facebook_connect is not returning a user when really it should.)
-
   # Decode the signed_request data from Facebook
   facebook_id, facebook_token = decode_signed_request(signed_request)
   # See if we are connected properly, with the proper permissions
-  error, user = facebook_connect(facebook_id, facebook_token, permissions)
+  user, error = tackle_retrys(lambda: facebook_connect(facebook_id, 
+                                                       facebook_token,
+                                                       permissions),
+                              return_error=True)
+  if error:
+    # Todo
+    # Fix problems installing a few users are having.
+    # (Somehow facebook_connect is not returning a user when really it should.)
+    logging.error("WE GOT AN ERROR CONNECTING THE USER, DEBUG THIS!")
+
   # Now check results, test Google token too
   if user:
     locale = user.locale
