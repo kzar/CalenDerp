@@ -954,7 +954,6 @@ def facebook_connect(facebook_id, facebook_token, permissions):
                    locale=locale,
                    status='Connected to Facebook.')
       user.put()
-  logging.error('USER RETURNED')
   return user, False
 
 def gcal_connect(user, token):
