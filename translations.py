@@ -48,7 +48,7 @@ languages['es_ES'] = {"Not connected to Google" : u"No se ha conectado con Googl
 "Something went wrong, please refresh the page!" : u"Algo estuvo mal, por favor refresca o actualiza la página",
 "%s's Birthday" : u"%s's Cumpleaños",
 "Facebook connection broken." : u"Error en la conexión con Facebook",
-"Última s: %actualización" : u"Last updated: %s",
+"Last updated: %s" : u"Última s: %actualización",
 "Connected to Google Calendar." : u"Conectado con Google Calendar.",
 "Birthdays" : u"Cumpleaños",
 "Facebook friend birthdays" : u"Cumpleaños de tus amigos de Facebook",
