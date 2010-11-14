@@ -925,34 +925,37 @@ def decode_signed_request(signed_request):
 
 def facebook_connect(facebook_id, facebook_token, permissions):
   "Take the details from Facebook and return the User object or None"""
-  if facebook_id and facebook_token:
-    # First check they have all the required permissions
-    graph = facebook.GraphAPI(facebook_token)
-    needed_perms, parsed_error = facebook_scope_is(permissions, graph=graph)
-    if parsed_error != False:
-      return None, parsed_error
-    if needed_perms:
-      # Good now let's see if they are in our database
-      user = Users.all().filter("facebook_id =", facebook_id).get()
-      if user:
-        # They are, let's make sure their Facebook token is up to date
-        if facebook_token != user.facebook_token:
-          user.facebook_token = facebook_token
-          user.put()
-      else:
-        # They aren't in our database, add 'um!
-        locale, parsed_error = check_locale(facebook_token=facebook_token)
-        if parsed_error != False:
-          return None, parsed_error
-        user = Users(facebook_id=facebook_id,
-                     facebook_token=facebook_token,
-                     locale=locale,
-                     status='Connected to Facebook.')
+  # First check there is a token and ID
+  if not facebook_id or not facebook_token:
+    logging.error('FBID or TOKEN MISSING')
+    return None, False
+  # Next check they have all the required permissions
+  graph = facebook.GraphAPI(facebook_token)
+  needed_perms, parsed_error = facebook_scope_is(permissions, graph=graph)
+  if parsed_error != False:
+    return None, parsed_error
+  if not needed_perms:
+    user = None
+  else:
+    # Good now let's see if they are in our database
+    user = Users.all().filter("facebook_id =", facebook_id).get()
+    if user:
+      # They are, let's make sure their Facebook token is up to date
+      if facebook_token != user.facebook_token:
+        user.facebook_token = facebook_token
         user.put()
     else:
-      # They don't have proper permissions, ignore them!
-      user = None
-    return user, False
+      # They aren't in our database, add 'um!
+      locale, parsed_error = check_locale(facebook_token=facebook_token)
+      if parsed_error != False:
+        return None, parsed_error
+      user = Users(facebook_id=facebook_id,
+                   facebook_token=facebook_token,
+                   locale=locale,
+                   status='Connected to Facebook.')
+      user.put()
+  logging.error('USER RETURNED')
+  return user, False
 
 def gcal_connect(user, token):
   """Take a user and a google token parameter. Return a google connection if
