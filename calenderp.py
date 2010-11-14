@@ -82,7 +82,7 @@ def parse_facebook_error(err):
   on the error's contents."""
   return parse_error("Facebook Error", 
                      {'code': err.type, 'reason': err.message},
-                     config.FACEBOOK_ERRORS, 'code')
+                     errors.FACEBOOK_ERRORS, 'code')
 
 def parse_google_error(err):
   """Take a Google error and return an action like 'retry' or 'give-up' based
@@ -96,7 +96,7 @@ def parse_google_error(err):
   else:
     error = {'reason': err.message.strip()}
   # Now deal with it    
-  return parse_error("Google Error", error, config.GOOGLE_ERRORS, 'reason')
+  return parse_error("Google Error", error, errors.GOOGLE_ERRORS, 'reason')
 
 def handle_error(task, err=None, parser=None, action=None):
   """Helper function to make handling Google + Facebook errors within task 
