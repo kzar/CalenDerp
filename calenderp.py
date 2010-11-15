@@ -360,26 +360,24 @@ def check_locale(user=None, google_token=None, facebook_token=None):
       user = Users.all().filter("google_token = ", google_token).get()
     elif facebook_token:
       user = Users.all().filter("facebook_token = ", facebook_token).get()
-  if not user:
-    return None, 'give-up'
-
   # Check we don't already know user's locale
-  if user.locale:
+  if user and user.locale:
     return user.locale, False
   else:
     # We don't so ask Facebook
-    graph = facebook.GraphAPI(user.facebook_token)  
+    graph = facebook.GraphAPI(facebook_token or user.facebook_token)
     try:
       results = graph.get_object("me", fields='locale')
     except (urlfetch.Error, GraphAPIError), err:
       return None, parse_facebook_error(err)
-
+    # Did we get a result?
     locale = results['locale']
     if locale:
-      # We know now, record in database
-      logging.info('Locale updated')
-      user.locale = locale
-      user.put()     
+      # We know now, record in database assuming the user is in there
+      if user:
+        logging.info('Locale updated')
+        user.locale = locale
+        user.put()   
     return locale, False
 
 def enqueue_tasks(updates, token, locale, chunk_size=5):
@@ -948,12 +946,14 @@ def facebook_connect(facebook_id, facebook_token, permissions):
       # They aren't in our database, add 'um!
       locale, parsed_error = check_locale(facebook_token=facebook_token)
       if parsed_error != False:
+        logging.error("Oh sheeeiiit!11!one!")
         return None, parsed_error
       user = Users(facebook_id=facebook_id,
                    facebook_token=facebook_token,
                    locale=locale,
-                   status=l('Connected to Facebook.'))
-      user.put()
+                   status='Connected to Facebook.')
+      user.put() 
+      # Todo - status should be translated, but we don't know locale
   return user, False
 
 def gcal_connect(user, token):
@@ -996,9 +996,6 @@ def user_connection_status(signed_request, google_token, permissions):
                                                        permissions),
                               return_error=True)
   if error:
-    # Todo
-    # Fix problems installing a few users are having.
-    # (Somehow facebook_connect is not returning a user when really it should.)
     logging.error("WE GOT AN ERROR CONNECTING THE USER, DEBUG THIS!")
 
   # Now check results, test Google token too
