@@ -77,6 +77,11 @@ def parse_error(message, error, errors_list, error_index_key):
     logging.error('Can\'t handle this error properly, it\'s unknown!')    
     return 'give-up'
 
+def parse_urlfetch_error(err):
+  """Take a URLFetch error and parse it."""
+  return parse_error("urlfetch Error", {'reason': err.message.strip()},
+                     errors.URLFETCH_ERRORS, 'code')
+
 def parse_facebook_error(err):
   """Take a Facebook error and return an action like 'retry' or 'give-up' based
   on the error's contents."""
@@ -87,16 +92,13 @@ def parse_facebook_error(err):
 def parse_google_error(err):
   """Take a Google error and return an action like 'retry' or 'give-up' based
   on the error."""
-  # It's a Google data RequestError
-  if type(err[0]).__name__ == 'dict':
-    error = {'code': err[0]['status'], 
-             'message': err[0]['body'],
-             'reason': err[0]['reason']}
-  # It's a urlfetch DownloadError
-  else:
-    error = {'reason': err.message.strip()}
-  # Now deal with it    
-  return parse_error("Google Error", error, errors.GOOGLE_ERRORS, 'reason')
+  error = {'code': err[0]['status'], 
+           'message': err[0]['body'],
+           'reason': err[0]['reason']}
+  return parse_error("Google Error", 
+                     {'code': err[0]['status'], 'message': err[0]['body'],
+                      'reason': err[0]['reason']},
+                     errors.GOOGLE_ERRORS, 'reason')
 
 def handle_error(task, err=None, parser=None, action=None):
   """Helper function to make handling Google + Facebook errors within task 
@@ -201,8 +203,10 @@ def grab_birthdays(user):
   try:
     friends = graph.get_object("me/friends", 
                                fields="link,birthday,name,picture")
-  except (urlfetch.Error, GraphAPIError), err:
+  except GraphAPIError, err:
     return [], parse_facebook_error(err)
+  except urlfetch.Error, err:
+    return [], parse_urlfetch_error(err)
 
   results = []
   for friend in friends['data']:
@@ -242,8 +246,10 @@ def grab_events(user):
   try:
     attending = graph.get_object("me/events/attending", fields=fields)
     maybe = graph.get_object("me/events/maybe", fields=fields)
-  except (urlfetch.Error, GraphAPIError), err:
+  except GraphAPIError, err:
     return [], parse_facebook_error(err)
+  except urlfetch.Error, err:
+    return [], parse_urlfetch_error(err)
 
   events = attending['data'] + maybe['data']
 
@@ -368,8 +374,10 @@ def check_locale(user=None, google_token=None, facebook_token=None):
     graph = facebook.GraphAPI(facebook_token or user.facebook_token)
     try:
       results = graph.get_object("me", fields='locale')
-    except (urlfetch.Error, GraphAPIError), err:
+    except GraphAPIError, err:
       return None, parse_facebook_error(err)
+    except urlfetch.Error, err:
+      return None, parse_urlfetch_error(err)
     # Did we get a result?
     locale = results['locale']
     if locale:
@@ -476,8 +484,10 @@ def find_event(gcal, calendar, task, search_term=None, extended=None):
   # Run the search
   try: 
     results = gcal.CalendarQuery(query).entry
-  except (DownloadError, RequestError), err:
+  except RequestError, err:
     return [], handle_error(task, err, parse_google_error)
+  except (DownloadError, urlfetch.Error), err:
+    return [], handle_error(task, err, parse_urlfetch_error)
   except IndexError:
     # No matches
     logging.info('Coudln\'t find event ' + (search_term or str(params)))
@@ -640,8 +650,10 @@ def handle_updateevents(task, gcal, token, l):
   try:
     calendar = lookup_calendar(task.get('calendar'), config.EVENT_CALENDAR,
                                gcal, token, l)
-  except (RequestError, DownloadError), err:
+  except RequestError, err:
     return handle_error(task, err, parse_google_error)
+  except (DownloadError, urlfetch.Error), err:
+    return handle_error(task, err, parse_urlfetch_error)
   else:
     # We can't update a calendar that doesn't exist
     if not calendar:
@@ -660,8 +672,10 @@ def handle_updatebirthdays(task, gcal, token, l):
   try:
     calendar = lookup_calendar(task.get('calendar'), config.BIRTHDAY_CALENDAR,
                                gcal, token, l)
-  except (RequestError, DownloadError), err:
+  except RequestError, err:
     return handle_error(task, err, parse_google_error)
+  except (DownloadError, urlfetch.Error), err:
+    return handle_error(task, err, parse_urlfetch_error)
   else:    
     # We can't update a calendar that doesn't exist
     if not calendar:
@@ -683,8 +697,10 @@ def handle_insert_event(task, gcal, token, l):
                          location=task.get('location', None))
     gcal.InsertEvent(event, task['calendar'])
     return []
-  except (DownloadError, RequestError), err:
+  except RequestError, err:
     return handle_error(task, err, parse_google_error)
+  except (DownloadError, urlfetch.Error), err:
+    return handle_error(task, err, parse_urlfetch_error)
   
 def handle_update_event(task, gcal, token, l):
   """Take an update event task and deal with it. Return a list of tasks to
@@ -709,8 +725,10 @@ def handle_update_event(task, gcal, token, l):
                              location=task.get('location', None))
       try:
         gcal.UpdateEvent(edit_link, event)
-      except (DownloadError, RequestError), err:
+      except RequestError, err:
         return handle_error(task, err, parse_google_error)
+      except (DownloadError, urlfetch.Error), err:
+        return handle_error(task, err, parse_urlfetch_error)
   else:
     logging.error("Couldn't find event to update:" + task['fb_id'])
   return []
@@ -743,8 +761,10 @@ def handle_remove_event(task, gcal, token, l):
       logging.info("Deleting event " + str(event.title.text))
       try:
         gcal.DeleteEvent(event.GetEditLink().href)  
-      except (DownloadError, RequestError), err:
+      except RequestError, err:
         return handle_error(task, err, parse_google_error)
+      except (DownloadError, urlfetch.Error), err:
+        return handle_error(task, err, parse_urlfetch_error)
   else:
     logging.error("Couldn't find event to delete:" + task['fb_id'])
   return []
@@ -865,8 +885,10 @@ def handle_insert_calendar(task, gcal, token, l):
   # OK it doesn't let's add it
   try:
     new_cal = create_calendar(gcal, l(task['title']), l(task['description']))
-  except (RequestError, DownloadError), err:
+  except RequestError, err:
     return handle_error(task, err, parse_google_error)
+  except (DownloadError, urlfetch.Error), err:
+    return handle_error(task, err, parse_urlfetch_error)
   else:
     # Record the calendar in the user's datastore
     user = Users.all().filter("google_token =", token).get()
@@ -890,9 +912,10 @@ def check_facebook_scope(permissions, token=None, graph=None):
   query = 'SELECT ' + scope + ' FROM permissions WHERE uid=me()'
   try:
     results = graph.fql(query)
-  except (urlfetch.Error, GraphAPIError), err:
+  except GraphAPIError, err:
     return None, parse_facebook_error(err)
-
+  except urlfetch.Error, err:
+    return None, parse_urlfetch_error(err)
   # If we have results return them
   if results and len(results) and type(results).__name__ == 'list':
     return [k for k in results[0] if results[0][k]], False
