@@ -29,6 +29,8 @@
 "It actually works."
 "I ACCIDENTALLY Install App?"
 
+# Locales that are being used but not yet translated
+# nl_NL, da_DK, cs_CZ, pl_PL, es_LA, et_EE
 
 languages = {}
 

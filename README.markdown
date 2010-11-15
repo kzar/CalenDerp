@@ -14,11 +14,9 @@ Anyway give it a try: <http://apps.facebook.com/calenderp/>
 Todo
 ----
  - Process requests to the Google Calendar API in batches, hopefully keeping us within quotas.
- - Add translations for different languages
+ - Add translations for more languages.
  - Figure out how to get locale for user before they have installed the Facebook application, that will let us display install.html in their native language.
- - Figure out why some users are constantly shown the install page, what's wrong with the facebook_connect code
- - Make sure the translator function is being set properly everywhere, status updates aren't being translated ATM
- - Investigate Google Calendar timezones, I'm giving it UTC time but apparently that's not being converted their end
+ - Investigate Google Calendar timezones, there's one report of a problem of Google calendar not converting the UTC time I passed.
  - Only store a hash of event descriptions because they are far too long.
 
 License
