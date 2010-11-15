@@ -80,7 +80,7 @@ def parse_error(message, error, errors_list, error_index_key):
 def parse_urlfetch_error(err):
   """Take a URLFetch error and parse it."""
   return parse_error("urlfetch Error", {'reason': err.message.strip()},
-                     errors.URLFETCH_ERRORS, 'code')
+                     errors.URLFETCH_ERRORS, 'reason')
 
 def parse_facebook_error(err):
   """Take a Facebook error and return an action like 'retry' or 'give-up' based
