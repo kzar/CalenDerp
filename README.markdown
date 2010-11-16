@@ -16,7 +16,6 @@ Todo
  - Process requests to the Google Calendar API in batches, hopefully keeping us within quotas.
  - Add translations for more languages.
  - Figure out how to get locale for user before they have installed the Facebook application, that will let us display install.html in their native language.
- - Investigate Google Calendar timezones, there's one report of a problem of Google calendar not converting the UTC time I passed.
  - Only store a hash of event descriptions because they are far too long.
 
 License
