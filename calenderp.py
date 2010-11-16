@@ -51,6 +51,7 @@ class Users(db.Model):
   birthdays = db.TextProperty()
   status = db.StringProperty(required=True)
   locale = db.StringProperty()
+  time_difference = db.IntegerProperty()
 
 class Flags(db.Model):
   flag_key = db.StringProperty(required=True)
@@ -106,7 +107,7 @@ def handle_error(task, err=None, parser=None, action=None):
   a list of tasks to perform."""
   # First make sure there really is an error!
   if not err:
-    return [{}]
+    return []
   # Next make sure there are any retrys left for the task
   retrys = task.get('retrys', config.QUERY_RETRYS)
   if (retrys < 1):
@@ -342,51 +343,79 @@ def format_birthdaytask(birthday, task_type, calendar, l):
           'start': start, 'end': end, 'picture': birthday['pic'],
           'fb_id': birthday['id'], 'calendar': calendar, 'repeat': 'YEARLY'}
 
-def format_eventtask(event, task_type, calendar, l):
+def format_eventtask(event, task_type, calendar, l, time_difference):
   """Helpful function to take an event and return a task ready to be
   put in the task queue."""
   # Adjust the mangled dates Facebook gives us
   start = parse_date(event['start'], PT()).astimezone(UTC())
   end = parse_date(event['end'], PT()).astimezone(UTC())
   # Put them into the format Google wants
-  start = start.strftime('%Y-%m-%dT%H:%M:%S.000Z')
-  end = end.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+  td = make_timedelta(time_difference)
+  start = (start + td).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+  end = (end + td).strftime('%Y-%m-%dT%H:%M:%S.000Z')
   # Now return the task
   return {'type': task_type, 'title': event['name'], 'calendar': calendar, 
           'content': event['content'], 'start': start, 'end': end, 
           'fb_id': event['id'], 'location': event['location']}
 
-
-def check_locale(user=None, google_token=None, facebook_token=None):
-  """Take a google token, look up the user and return the locale. If we don't
-  know their locale yet then ask Facebook and record it."""
-  logging.info('Checking user\'s locale.')
+def facebook_user_query(field, datastore_key, user=None, google_token=None,
+                        facebook_token=None, default=None, force_update=False):
+  """This does the work for functions like check_locale and check_timezone.
+  It's a common pattern to query Facebook for 1 piece of info if it's not 
+  already in the database, update it if different and then return the result."""
+  # First find the user
   if not user:
     if google_token:
       user = Users.all().filter("google_token = ", google_token).get()
     elif facebook_token:
       user = Users.all().filter("facebook_token = ", facebook_token).get()
-  # Check we don't already know user's locale
-  if user and user.locale:
-    return user.locale, False
+  # Next check the existing data
+  if user and not force_update:
+    existing = getattr(user, datastore_key)
+    # Todo - more useful check for existing being OK
+    if existing != None:
+      return existing, False
+  # No good, ask Facebook
+  graph = facebook.GraphAPI(facebook_token or user.facebook_token)
+  try:
+    results = graph.get_object("me", fields=field)
+  except GraphAPIError, err:
+    return None, parse_facebook_error(err)
+  except urlfetch.Error, err:
+    return None, parse_urlfetch_error(err)
+  # Update user if needed
+  result = results.get(field, default)
+  if user and result != getattr(user, datastore_key):
+    logging.info(datastore_key + ' updated.')
+    setattr(user, datastore_key, result)
+    user.put()
+  return result, False
+  
+def check_locale(user=None, google_token=None, facebook_token=None):
+  """Take a google token, look up the user and return the locale. If we don't
+  know their locale yet then ask Facebook and record it."""
+  return facebook_user_query('locale', 'locale', user, google_token, 
+                             facebook_token)
+
+def is_number_p(x):
+  type(x).__name__ in ['int', 'float', 'complex']
+
+def make_timedelta(hours):
+  """Convenience function that gives you a timedelta."""
+  if is_number_p(hours):
+    return timedelta(hours=hours)
   else:
-    # We don't so ask Facebook
-    graph = facebook.GraphAPI(facebook_token or user.facebook_token)
-    try:
-      results = graph.get_object("me", fields='locale')
-    except GraphAPIError, err:
-      return None, parse_facebook_error(err)
-    except urlfetch.Error, err:
-      return None, parse_urlfetch_error(err)
-    # Did we get a result?
-    locale = results['locale']
-    if locale:
-      # We know now, record in database assuming the user is in there
-      if user:
-        logging.info('Locale updated')
-        user.locale = locale
-        user.put()   
-    return locale, False
+    return timedelta(0)
+
+def check_timedifference(user=None, google_token=None, facebook_token=None):
+  """Lookup the user's time difference and return it."""
+  return facebook_user_query('timezone', 'time_difference', user, google_token,
+                             facebook_token, default=0)
+
+def update_timedifference(user=None, google_token=None, facebook_token=None):
+  """Update the user's time difference and return it."""
+  return facebook_user_query('timezone', 'time_difference', user, google_token,
+                             facebook_token, default=0, force_update=True)
 
 def enqueue_tasks(updates, token, locale, chunk_size=5):
   """Take a list of updates and add them to the Task Queue."""
@@ -501,8 +530,7 @@ def handle_newuser_event(task, gcal, token, l):
   logging.info("Setting up new user.")
   return [dict({'type': 'insert-calendar'}, **config.BIRTHDAY_CALENDAR),
           dict({'type': 'insert-calendar'}, **config.EVENT_CALENDAR),
-          {'type': 'update-events'},
-          {'type': 'update-birthdays'}]
+          {'type': 'update-user'}]
 
 def event_not_in_past(entry):
   return parse_date(entry['end'], PT()) > datetime.now(UTC())
@@ -659,9 +687,14 @@ def handle_updateevents(task, gcal, token, l):
     if not calendar:
       return [dict({'type': 'insert-calendar'}, **config.EVENT_CALENDAR), task]
 
+    # Setup an formatting function that knows about the time difference
+    # (I can't decide if this is better or worse than throwing the time
+    # difference around, either way is kind of crappy, hmm..)
+    f = lambda a,b,c,d: format_eventtask(a,b,c,d, task['time_difference'])
+
     # It's there, update and return the results
-    return update_data(task, token, grab_events, format_eventtask, 
-                       'events', calendar, l, event_not_in_past)
+    return update_data(task, token, grab_events, f, 'events', calendar, l,
+                       event_not_in_past)
     
   
 def handle_updatebirthdays(task, gcal, token, l):
@@ -730,7 +763,10 @@ def handle_update_event(task, gcal, token, l):
       except (DownloadError, urlfetch.Error), err:
         return handle_error(task, err, parse_urlfetch_error)
   else:
-    logging.error("Couldn't find event to update:" + task['fb_id'])
+    # If event we're updating doesn't exist we should just create it
+    logging.info("Event not found to update, creating it instead.")
+    task['type'] = 'insert-event'
+    return [task]
   return []
 
 
@@ -769,22 +805,36 @@ def handle_remove_event(task, gcal, token, l):
     logging.error("Couldn't find event to delete:" + task['fb_id'])
   return []
 
+def handle_update_user(task, gcal, token, l):
+  """This handler is used to update a User's calendars and status. It's 
+  necessary because refresh_everyones_calendars() was starting to timeout."""
+  user = Users.all().filter("google_token = ", token).get()
+  if (user):
+    logging.info("Updating user's stuff")
+    # "Why update timezone every time?" - because people bitch if it's ever
+    # even an hour wrong! (and rightly so)
+    time_difference, parsed_error = update_timedifference(user=user)
+    # Maybe we should update locale here too? The jury's out on that one.
+    if parsed_error != False:
+      return handle_error(task, action=parsed_error)
+    time = (datetime.now(UTC()) + 
+            make_timedelta(time_difference)).strftime('%A %d %B %Y - %X')
+    user.status = l("Last updated: %s") % time
+    user.put()
+    return [{'type': 'update-events', 'calendar': user.event_cal,
+             'time-difference': time_difference},
+            {'type': 'update-birthdays', 'calendar': user.bday_cal}]
+  else:
+    logging.error("Can't find user so can't update them!")
+    return []
+
 def refresh_everyones_calendars():
   """This function is used by the /refresh view to refresh everyone's calendars.
   It loops through each user and adds refresh tasks to the task queue."""
   users = Users.all()
-  time = datetime.now().strftime('%A %d %B %Y - %X')
   for user in users:
     if user.facebook_token and user.google_token:
-      l = translator(user.locale)
-      # Update their status. (I know, a little misleading time-wise.)      
-      user.status = l("Last updated: %s") % time
-      user.put()
-      # Setup the tasks
-      tasks = [{'type': 'update-events', 'calendar': user.event_cal},
-               {'type': 'update-birthdays', 'calendar': user.bday_cal}]
-      # Run the tasks
-      enqueue_tasks(tasks, user.google_token, user.locale)
+      enqueue_tasks([{'type': 'update-user'}], user.google_token, user.locale)
 
 def lang_get(s, locale, lang):
   """Helper function for translator, it's required because lambda is so limited
@@ -841,17 +891,18 @@ def handle_tasks(tasks, token, locale):
               'new-user': 'handle_newuser_event',
               'update-birthdays': 'handle_updatebirthdays',
               'update-events': 'handle_updateevents',
-              'remove-google-token': 'handle_removegoogle'}
+              'remove-google-token': 'handle_removegoogle',
+              'update-user': 'handle_update_user'}
 
   # Deal with the tasks
   for task in tasks:
-    handler = globals()[handlers.get(task['type'], 'handle_unknown_task')]
     try:
       # Dispatch the task to the appropriate handler
+      handler = globals()[handlers.get(task['type'], 'handle_unknown_task')]
       future_tasks.extend(handler(task, gcal, token, l))
     except Exception, err:
       # Catch any exception, this is to stop Google retrying the task like mad
-      logging.error('Handler for ' + task['type'] + ' Failed!\n' +
+      logging.error('Handler for ' + task.get('type','') + ' Failed!\n' +
                     'Error: ' + str(err) + '\n' +
                     'Task: ' + str(task) + '\n' +
                     'Locale: ' + str(locale))
@@ -948,7 +999,7 @@ def facebook_connect(facebook_id, facebook_token, permissions):
   "Take the details from Facebook and return the User object or None"""
   # First check there is a token and ID
   if not facebook_id or not facebook_token:
-    logging.error('FBID or TOKEN MISSING')
+    logging.info('FBID or TOKEN MISSING - New user?')
     return None, False
   # Next check they have all the required permissions
   graph = facebook.GraphAPI(facebook_token)
