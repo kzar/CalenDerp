@@ -690,7 +690,7 @@ def handle_updateevents(task, gcal, token, l):
     # Setup an formatting function that knows about the time difference
     # (I can't decide if this is better or worse than throwing the time
     # difference around, either way is kind of crappy, hmm..)
-    f = lambda a,b,c,d: format_eventtask(a,b,c,d, task['time_difference'])
+    f = lambda a,b,c,d: format_eventtask(a,b,c,d, task['time-difference'])
 
     # It's there, update and return the results
     return update_data(task, token, grab_events, f, 'events', calendar, l,
