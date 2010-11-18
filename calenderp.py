@@ -398,7 +398,7 @@ def check_locale(user=None, google_token=None, facebook_token=None):
                              facebook_token)
 
 def is_number_p(x):
-  type(x).__name__ in ['int', 'float', 'complex']
+  return type(x).__name__ in ['int', 'float', 'complex']
 
 def make_timedelta(hours):
   """Convenience function that gives you a timedelta."""
@@ -617,10 +617,13 @@ def list_calendars(gcal):
   calendars = []
   feed = gcal.GetOwnCalendarsFeed()
   for i, calendar in enumerate(feed.entry):
-    description = str(calendar.summary and calendar.summary.text)
-    calendars.append({'title': (calendar.title and calendar.title.text) or " ",
-                      'description': description,
-                      'link': calendar.GetAlternateLink().href})
+    link = calendar.GetAlternateLink() and calendar.GetAlternateLink().href
+    if link:
+      title = (calendar.title and calendar.title.text) or " "
+      description = str(calendar.summary and calendar.summary.text)
+      calendars.append({'title': title,
+                        'description': description,
+                        'link': link})
   return calendars
 
 def find_calendar(calendars, l, link=None, description=None, link_key=None,
