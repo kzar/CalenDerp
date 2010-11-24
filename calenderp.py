@@ -111,7 +111,7 @@ def handle_error(task, err=None, parser=None, action=None):
   # Next make sure there are any retrys left for the task
   retrys = task.get('retrys', config.QUERY_RETRYS)
   if (retrys < 1):
-    logging.error('We ran out of retrys for this task!')
+    logging.warning('We ran out of retrys for this task!')
     return []
   # Now figure out what action should be taken
   # (This might already be set if we've already parsed the error)
@@ -285,12 +285,16 @@ def check_google_token(token):
   try:
     calendar_service.AuthSubTokenInfo()
   except NonAuthSubToken:
-    return None
+    return None, False
   except apiproxy_errors.OverQuotaError:
     delay_tasks()
-    return None
+    return None, 'retry'
+  except RequestError, err:
+    return None, parse_google_error(err)
+  except (DownloadError, urlfetch.Error), err:
+    return None, parse_urlfetch_error(err)
   else:
-    return calendar_service
+    return calendar_service, False
 
 def upgrade_google_token(token):
   """Take a token string that google gave us and upgrade it
@@ -351,8 +355,8 @@ def format_eventtask(event, task_type, calendar, l, time_difference):
   end = parse_date(event['end'], PT()).astimezone(UTC())
   # Put them into the format Google wants
   td = make_timedelta(time_difference)
-  start = (start + td).strftime('%Y-%m-%dT%H:%M:%S.000Z')
-  end = (end + td).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+  start = (start - td).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+  end = (end - td).strftime('%Y-%m-%dT%H:%M:%S.000Z')
   # Now return the task
   return {'type': task_type, 'title': event['name'], 'calendar': calendar, 
           'content': event['content'], 'start': start, 'end': end, 
@@ -417,7 +421,7 @@ def update_timedifference(user=None, google_token=None, facebook_token=None):
   return facebook_user_query('timezone', 'time_difference', user, google_token,
                              facebook_token, default=0, force_update=True)
 
-def enqueue_tasks(updates, token, locale, chunk_size=5):
+def enqueue_tasks(updates, token, locale, chunk_size=1):
   """Take a list of updates and add them to the Task Queue."""
   # Make sure we've got their locale
   if not locale:
@@ -429,6 +433,9 @@ def enqueue_tasks(updates, token, locale, chunk_size=5):
     eta = run_date
   else:
     eta = None
+
+  # Todo catch and handle TransientError 
+  # http://code.google.com/appengine/docs/python/taskqueue/exceptions.html
 
   # Now add those tasks :)
   for i in range(0, len(updates), chunk_size):
@@ -640,7 +647,7 @@ def find_calendar(calendars, l, link=None, description=None, link_key=None,
   # Oh dear, well let's check for a matching description.. scraping the barrel
   if description:
     for calendar in calendars:
-      if calendar['description'] == l(description):
+      if calendar['description'].decode("utf-8") == l(description):
         return calendar['link'], True
   # We could search by Title but I think that's a bad idea, too vague
   if link:
@@ -873,11 +880,18 @@ def handle_tasks(tasks, token, locale):
   """This function is used by the /worker view to actually do all the work given
   in the task queue."""
   # Connect to Google calendar
-  gcal = check_google_token(token)
-  if not gcal:
-      # Probably because we're out of quota for the URL fetch so just enqueue
-      enqueue_tasks(tasks, token, locale)
-      return
+  gcal, parsed_error = check_google_token(token)
+  
+  # If there's an error connecting handle the error for each task
+  if parsed_error != False:
+    for task in tasks:
+      future_tasks.extend(handle_error(task, action=parsed_error))
+      enqueue_tasks(future_tasks, token, locale)
+    return
+  # No error but no gcal probably means we should retry later
+  elif not gcal:
+    enqueue_tasks(tasks, token, locale)
+    return
 
   # Get translator function
   l = translator(locale)
@@ -1040,7 +1054,9 @@ def gcal_connect(user, token):
   gcal = None
   if user.google_token:
     # Already registered, make sure existing token is valid
-    gcal = check_google_token(user.google_token)
+    gcal, parsed_error = check_google_token(user.google_token)
+    if parsed_error != False:
+      return None, parsed_error
   if not gcal:
     # It's not, let's see if they have passed a good token
     if token:
@@ -1051,7 +1067,7 @@ def gcal_connect(user, token):
         user.google_token = gcal.GetAuthSubToken()
         user.put()
         enqueue_tasks([{'type': 'new-user'}], user.google_token, user.locale)
-  return gcal
+  return gcal, False
 
 def quota_status():
   quota_used_up =  we_gotta_wait()
@@ -1080,7 +1096,11 @@ def user_connection_status(signed_request, google_token, permissions):
     locale = user.locale
     status = user.status
     facebook_connected = True
-    if gcal_connect(user, google_token):
+    gcal, error = tackle_retrys(lambda: gcal_connect(user, google_token),
+                                return_error=True)
+    if error:
+      logging.error("GOOGLE ERROR CONNECTING THE USER, DEBUG THIS!")
+    elif gcal:
       google_connected = True
 
   l = translator(locale)
