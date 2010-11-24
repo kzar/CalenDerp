@@ -13,10 +13,12 @@ Anyway give it a try: <http://apps.facebook.com/calenderp/>
 
 Todo
 ----
- - Process requests to the Google Calendar API in batches, hopefully keeping us within quotas.
+ - Figure out how to avoid passing long event descriptions around, through through the task queue etc. How can we do this whilst avoiding lots more Facebook API requests asking for the description? (Storing a hash would work but then it would require me to ask Facebook for the description each and every time I add or update an event.)
+ - Figure out how to to avoid hitting AppEngine's "simultaneous dynamic request limit". This is REALLY important because as more users install the app it's becoming a real problem. (Google will only scale your application so far if requests take longer than 1 second but unfortunately most of my requests to the Google calendar API seem to blow that out of the water :(! )
  - Add translations for more languages.
+ - Write a test suite, I should have done this a lot earlier as the application is getting fairly complicated and developing it blind is insane. (I'm proud though it all works really well.)
+ - Update all of the function's documentation strings, as I've refactored the code the documentation strings have started to get a bit out of sync with the actual code.
  - Figure out how to get locale for user before they have installed the Facebook application, that will let us display install.html in their native language.
- - Only store a hash of event descriptions because they are far too long.
 
 License
 -------
