@@ -18,6 +18,9 @@ handlers:
   script: code.py
   login: admin
 
+- url: /test.*
+  script: gaeunit.py
+  login: admin
+
 - url: /.*
   script: code.py
-
