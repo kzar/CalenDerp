@@ -34,6 +34,35 @@
 
 languages = {}
 
+# French translation by Benoit Stroobants
+languages['fr_FR'] = {"Not connected to Google" : u"Non connecté à Google",
+"You're not currently connected to Google calendar, click the button below to connect and create your Facebook calendars." : u"Vous n'être pas connecté à votre calendrier Google, cliquer sur le bouton pour vous connectez et créer votre calendrier facebook",
+"CONNECT TO GOOGLE" : u"Connecté à Google",
+"This application lets you put your friends birthdays into Google Calendar." :"Cette application vous permet d'insérer les anniversaires de vos amis dans votre calendrier Google",
+"Features" : u"Caractéristiques",
+"Puts your birthdays into Google Calendar." : u"Mettez vos anniversaires dans votre calendrier Google",
+"Puts events you're attending into Google Calendar." : u"Mettez les événements que vous attendez dans votre Calendrier Google",
+"It actually works." : u"Actuellemnt, ça fonctionne",
+"Connected to Google" : u"connecté à Google",
+"You're connected to Google calendar, things should start appearing in your calendar soon. (Make sure to refresh your calendar if you don't notice anything.)" : u"Vous êtes connecté à votre calendrier, les données vont commencer à apparaitre d'ici peu (Faites une actualisation de votre calendrier si vous ne voyez rien",
+"Current status" : u"Status actuel",
+"We dun goofed!" : u"On a fait une gaffe",
+"Something went wrong, please refresh the page!" : u"Quelque-chose ne va pas, actualiser la page",
+"%s's Birthday" : u"Anniversaire de %s",
+"Facebook connection broken." : u"La connection avec facebook a échoué",
+"Last updated: %s" : u"dernière mise à jour: %s",
+"Connected to Google Calendar." : u"Connecté au calendrier Google",
+"Birthdays" : u"Anniversaire",
+"Facebook friend birthdays" : u"Anniversaire des amis Facebook",
+"Events" : u"Evénements",
+"Facebook events" : u"Evénements facebook",
+"This application lets you put your friends birthdays into Google Calendar." : u"Cette application vous permet de mettre les anniversaires de vos amis facebook dans votre calendrier Google",
+"Features" : u"Caractéristiques",
+"Puts your birthdays into Google Calendar." : u"Mettez les anniversaires dans votre calendrier facebook",
+"Puts events you're attending into Google Calendar." : u"Mettez les évènements facebook dans le calendrier Google",
+"It actually works." : u"Actuellement, ça fonctionne",
+"I ACCIDENTALLY Install App?" : u"J'ai installé accidentellement cette application"}
+
 # Spanish translations by Rodrigo Acevedo Duarte
 languages['es_ES'] = {"Not connected to Google" : u"No se ha conectado con Google",
 "You're not currently connected to Google calendar, click the button below to connect and create your Facebook calendars." : u"Actualmente no estas conectado con Google Calendar, haz click en el botón a continuación para sincronizar y crear tus calendarios de Facebook.",
