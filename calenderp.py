@@ -51,7 +51,7 @@ class Users(db.Model):
   birthdays = db.TextProperty()
   status = db.StringProperty(required=True)
   locale = db.StringProperty()
-  time_difference = db.IntegerProperty()
+  time_difference = db.FloatProperty()
 
 class Flags(db.Model):
   flag_key = db.StringProperty(required=True)
@@ -90,16 +90,29 @@ def parse_facebook_error(err):
                      {'code': err.type, 'reason': err.message},
                      errors.FACEBOOK_ERRORS, 'code')
 
+def parse_google_error_body(error):
+  """Some of Google's errors don't have a proper reason, we have to extract
+  it ourselves from the HTML message they give us.."""
+  try:
+    return re.search("<TITLE>(.+)</TITLE>", error).groups()[0]
+  except (AttributeError, KeyError, IndexError):
+    pass
+
 def parse_google_error(err):
   """Take a Google error and return an action like 'retry' or 'give-up' based
   on the error."""
+  # Either take the error's reason or check the body for one
+  reason = err[0].get("reason", parse_google_error_body(err[0]['body']))
+
+  if not reason:
+    logging.error("No error reason, giving up. " + str(err[0]))
+    return "give-up"
+
   error = {'code': err[0]['status'], 
            'message': err[0]['body'],
-           'reason': err[0]['reason']}
-  return parse_error("Google Error", 
-                     {'code': err[0]['status'], 'message': err[0]['body'],
-                      'reason': err[0]['reason']},
-                     errors.GOOGLE_ERRORS, 'reason')
+           'reason': reason}
+
+  return parse_error("Google Error", error, errors.GOOGLE_ERRORS, 'reason')
 
 def handle_error(task, err=None, parser=None, action=None):
   """Helper function to make handling Google + Facebook errors within task 
@@ -111,7 +124,7 @@ def handle_error(task, err=None, parser=None, action=None):
   # Next make sure there are any retrys left for the task
   retrys = task.get('retrys', config.QUERY_RETRYS)
   if (retrys < 1):
-    logging.warning('We ran out of retrys for this task!')
+    logging.info('We ran out of retrys for this task!')
     return []
   # Now figure out what action should be taken
   # (This might already be set if we've already parsed the error)
@@ -363,7 +376,8 @@ def format_eventtask(event, task_type, calendar, l, time_difference):
           'fb_id': event['id'], 'location': event['location']}
 
 def facebook_user_query(field, datastore_key, user=None, google_token=None,
-                        facebook_token=None, default=None, force_update=False):
+                        facebook_token=None, default=None, force_update=False,
+                        format_f=lambda x : x):
   """This does the work for functions like check_locale and check_timezone.
   It's a common pattern to query Facebook for 1 piece of info if it's not 
   already in the database, update it if different and then return the result."""
@@ -378,7 +392,7 @@ def facebook_user_query(field, datastore_key, user=None, google_token=None,
     existing = getattr(user, datastore_key)
     # Todo - more useful check for existing being OK
     if existing != None:
-      return existing, False
+      return format_f(existing), False
   # No good, ask Facebook
   graph = facebook.GraphAPI(facebook_token or user.facebook_token)
   try:
@@ -388,7 +402,7 @@ def facebook_user_query(field, datastore_key, user=None, google_token=None,
   except urlfetch.Error, err:
     return None, parse_urlfetch_error(err)
   # Update user if needed
-  result = results.get(field, default)
+  result = format_f(results.get(field, default))
   if user and result != getattr(user, datastore_key):
     logging.info(datastore_key + ' updated.')
     setattr(user, datastore_key, result)
@@ -411,15 +425,20 @@ def make_timedelta(hours):
   else:
     return timedelta(0)
 
+def make_float(i):
+  if i and is_number_p(i):
+    return float(i)
+
 def check_timedifference(user=None, google_token=None, facebook_token=None):
   """Lookup the user's time difference and return it."""
   return facebook_user_query('timezone', 'time_difference', user, google_token,
-                             facebook_token, default=0)
+                             facebook_token, default=0, format_f=make_float)
 
 def update_timedifference(user=None, google_token=None, facebook_token=None):
   """Update the user's time difference and return it."""
   return facebook_user_query('timezone', 'time_difference', user, google_token,
-                             facebook_token, default=0, force_update=True)
+                             facebook_token, default=0, force_update=True, 
+                             format_f=make_float)
 
 def enqueue_tasks(updates, token, locale, chunk_size=1):
   """Take a list of updates and add them to the Task Queue."""
@@ -879,6 +898,10 @@ def translator(locale):
 def handle_tasks(tasks, token, locale):
   """This function is used by the /worker view to actually do all the work given
   in the task queue."""
+  # Future tasks is a list of new tasks to enqueue, 
+  # generated while we have been dealing with the current tasks
+  future_tasks = []
+
   # Connect to Google calendar
   gcal, parsed_error = check_google_token(token)
   
@@ -895,10 +918,6 @@ def handle_tasks(tasks, token, locale):
 
   # Get translator function
   l = translator(locale)
-
-  # Future tasks is a list of new tasks to enqueue, 
-  # generated while we have been dealing with the current tasks
-  future_tasks = []
 
   # Map task types to handler functions
   handlers = {'insert-calendar': 'handle_insert_calendar',
