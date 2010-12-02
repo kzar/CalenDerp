@@ -473,8 +473,11 @@ def enqueue_task(token, locale, eta=None, task=None, store=None,
   # First save the data for the task in the datastore, this is because tasks
   # can only be so large and I was hitting the limit occasionally.
   if not store:
-    store = TaskData(data=json.dumps(task))
-    store.put()
+    try:
+      store = TaskData(data=json.dumps(task))
+      store.put()
+    except ApplicationError:
+      enqueue_task(token, locale, eta=eta, task=task, store=None, queue=queue)
   # Figure out the eta for the task
   if not eta:
     eta = grab_eta()
