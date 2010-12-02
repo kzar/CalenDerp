@@ -1,0 +1,7 @@
+queue:
+- name: fast
+  rate: 5/s
+  bucket_size: 10
+- name: slow
+  rate: 1/s
+  bucket_size: 5
