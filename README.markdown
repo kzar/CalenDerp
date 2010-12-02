@@ -18,6 +18,7 @@ Todo
  - Update all of the function's documentation strings, as I've refactored the code the documentation strings have started to get a bit out of sync with the actual code.
  - Figure out how to get locale for user before they have installed the Facebook application, that will let us display install.html in their native language.
  - Add datastore error parsing, we should handle datastore errors just as well as Google or Facebook ones.
+ - Re-design the user interface, it doesn't do my work justice.
 
 License
 -------
