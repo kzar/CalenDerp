@@ -25,6 +25,7 @@ from datetime import datetime, timedelta
 from uuid import uuid4
 from facebook import GraphAPIError
 from timezones import PT, UTC
+from models import Users, Flags, TaskData
 
 # Stuff for Google calendar
 sys.path.insert(0, 'gdata.zip/gdata')
@@ -41,25 +42,6 @@ import atom
 import getopt
 import string
 import time
-
-class Users(db.Model):
-  facebook_id = db.StringProperty(required=True)
-  facebook_token = db.StringProperty()
-  google_token = db.StringProperty()
-  bday_cal = db.LinkProperty()
-  event_cal = db.LinkProperty()
-  events = db.TextProperty()
-  birthdays = db.TextProperty()
-  status = db.StringProperty(required=True)
-  locale = db.StringProperty()
-  time_difference = db.FloatProperty()
-
-class Flags(db.Model):
-  flag_key = db.StringProperty(required=True)
-  value = db.StringProperty(required=True)
-
-class TaskData(db.Model):
-  data = db.TextProperty(required=True)
 
 def parse_error(message, error, errors_list, error_index_key):
   """Takes an error and a list of errors e.g. the Google errors and returns the
@@ -360,15 +342,6 @@ def create_calendar(gcal, title, summary):
   calendar.color = gdata.calendar.Color(value='#2952A3')
   return gcal.InsertCalendar(new_calendar=calendar)
 
-def list_contains(needle, haystack):
-  """Does a list contain something? Return something if yes or None if no"""
-  try:
-    haystack.index(needle)
-  except ValueError:
-    return None
-  else:
-    return needle
-
 def any_changes(new, old):
   """Take two dict's and look for differences in equivalent key's values.
   (Does not look for missing or extra entries.) Returns True or False"""
@@ -651,7 +624,7 @@ def diff_data(new_data, old_data, calendar, format_task_function, l,
   # Check for deleted data
   new_data_ids = [b['id'] for b in new_data]
   for old_entry in old_data:
-    if not list_contains(old_entry['id'], new_data_ids):
+    if not old_entry['id'] in new_data_ids:
       # Check it matches our checking function
       if delete_check(old_entry):
         # Delete entry
@@ -902,7 +875,7 @@ def handle_remove_event(task, gcal, token, l):
       except (DownloadError, urlfetch.Error), err:
         return handle_error(task, err, parse_urlfetch_error)
   else:
-    logging.error("Couldn't find event to delete:" + task['fb_id'])
+    logging.info("Couldn't find event to delete:" + task['fb_id'])
   return []
 
 def handle_update_user(task, gcal, token, l):
@@ -1201,21 +1174,26 @@ def user_connection_status(signed_request, google_token, permissions):
 
   # Now check results, test Google token too
   if user:
-    locale = user.locale
-    status = user.status
     facebook_connected = True
     gcal, parsed_error = tackle_retrys(lambda: gcal_connect(user, google_token),
                                 return_error=True)
     if parsed_error != False:
-      logging.error("GOOGLE ERROR CONNECTING THE USER, DEBUG THIS! ("
+      logging.error("YOYO GOOGLE ERROR CONNECTING THE USER, DEBUG THIS! ("
                     + str(parsed_error) + ")")
-      tackle_error(parsed_error, google_token, locale)
+      # For normal stuff give an error
       error = True
+      # For unusual stuff we want to log something and just pretend there's
+      # no google token. (That way the user is prompted to re-connect.)
+      if parsed_error not in ['retry', 'give-up']:
+        logging.error("GOOGLE ERROR CONNECTING THE USER, DEBUG THIS! ("
+                      + str(parsed_error) + ")")
+        error = False
     elif gcal:
       google_connected = True
 
-  l = translator(locale)
+  l = translator(user and user.locale)
 
   # Finaly return something simple for the view to use
   return {'google': google_connected, 'error': error, 'l': l,
-          'facebook': facebook_connected, 'status': quota_status() or status}
+          'facebook': facebook_connected, 
+          'status': quota_status() or user.status}
