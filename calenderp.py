@@ -34,7 +34,7 @@ try:
 except ImportError:
   from elementtree import ElementTree
 import gdata.calendar.service
-from gdata.service import NonAuthSubToken, RequestError
+from gdata.service import NonAuthSubToken, RequestError, TokenUpgradeFailed
 import gdata.service
 import atom.service
 import gdata.calendar
@@ -121,18 +121,16 @@ def handle_error(task, err=None, parser=None, action=None):
   """Helper function to make handling Google + Facebook errors within task 
   handlers easier. Takes an error and the task being processed and returns 
   a list of tasks to perform."""
-  # First make sure there really is an error!
-  if not err:
+  # Figure out what the action is
+  action = action or (err and parser and parser(err))
+  # Make sure there's something to handle
+  if not action:
     return []
   # Next make sure there are any retrys left for the task
   retrys = task.get('retrys', config.QUERY_RETRYS)
   if (retrys < 1):
     logging.info('We ran out of retrys for this task!')
     return []
-  # Now figure out what action should be taken
-  # (This might already be set if we've already parsed the error)
-  if not action:
-    action = parser(err)
   # OK now do it..
   if action == 'retry':
     logging.info(str(retrys) + ' retrys left.')
@@ -328,7 +326,10 @@ def upgrade_google_token(token):
   to a useable session one. Return the calendar object or None"""
   calendar_service = gdata.calendar.service.CalendarService()
   calendar_service.SetAuthSubToken(token)
-  calendar_service.UpgradeToSessionToken()
+  try:
+    calendar_service.UpgradeToSessionToken()
+  except TokenUpgradeFailed:
+    return None
   return (calendar_service)
 
 def create_calendar(gcal, title, summary):
@@ -400,13 +401,16 @@ def facebook_user_query(field, datastore_key, user=None, google_token=None,
     if existing != None:
       return format_f(existing), False
   # No good, ask Facebook
-  graph = facebook.GraphAPI(facebook_token or user.facebook_token)
+  graph = facebook.GraphAPI(facebook_token or (user and user.facebook_token))
   try:
     results = graph.get_object("me", fields=field)
   except GraphAPIError, err:
     return None, parse_facebook_error(err)
   except urlfetch.Error, err:
     return None, parse_urlfetch_error(err)
+  except AttributeError:
+    return None, 'give-up'
+    
   # Update user if needed
   result = format_f(results.get(field, default))
   if user and result != getattr(user, datastore_key):
@@ -857,6 +861,18 @@ def handle_removegoogle(task, gcal, token, l):
     logging.info("Removed Google token for " + str(user.facebook_id))
   return []
 
+def handle_removefacebook(task, gcal, token, l):
+  """Task handler to delete a user's facebook token. Used when it's no longer
+  working."""
+  logging.error("Removing Facebook Token1!11!!")
+  user = Users.all().filter("google_token = ", token).get()
+  if (user):
+    user.facebook_token = None
+    user.status = l("Facebook token expired.")
+    user.put()
+    logging.info("Removed Facebook token for " + str(user.facebook_id))
+  return []
+
 def handle_remove_event(task, gcal, token, l):
   """Take a update event task and deal with it. Return a list of tasks to
   perform later or an empty list."""
@@ -970,9 +986,11 @@ def handle_task(store_key, token, locale):
   gcal, parsed_error = check_google_token(token)
   # If there's an error connecting handle the error for each task
   if parsed_error != False:
-    future_tasks.extend(handle_error(task, action=parsed_error))
-    enqueue_tasks(future_tasks, token, locale)
-    return
+    # Special case - we're already removing google token so don't repeat
+    if task.get('type') != 'remove-google-token':
+      future_tasks.extend(handle_error(task, action=parsed_error))
+      enqueue_tasks(future_tasks, token, locale)
+      return
   # No error but no gcal probably means we should retry later
   elif not gcal:
     enqueue_task(token, locale, task=task)
@@ -990,6 +1008,7 @@ def handle_task(store_key, token, locale):
               'update-birthdays': 'handle_updatebirthdays',
               'update-events': 'handle_updateevents',
               'remove-google-token': 'handle_removegoogle',
+              'remove-facebook-token': 'handle_removefacebook',
               'update-user': 'handle_update_user'}
 
   # Deal with the task
@@ -1046,7 +1065,7 @@ def handle_insert_calendar(task, gcal, token, l):
     return []
   
 def handle_unknown_task(task, gcal, token, l):
-  logging.info('Unknown task type "' + task['type'] + '"')
+  logging.error('Unknown task type "' + task['type'] + '"')
   return []
 
 def check_facebook_scope(permissions, token=None, graph=None):
@@ -1132,13 +1151,15 @@ def gcal_connect(user, token):
   connected or None."""
   l = translator(user.locale)
   gcal = None
+  parsed_error = False
+  # Already registered, make sure existing token is valid
   if user.google_token:
-    # Already registered, make sure existing token is valid
     gcal, parsed_error = check_google_token(user.google_token)
-    if parsed_error != False:
-      return None, parsed_error
+    # If the error's retry we should, otherwise continue
+    if parsed_error == 'retry':
+      return None, 'retry'
+  # It's not, let's see if they have passed a good token
   if not gcal:
-    # It's not, let's see if they have passed a good token
     if token:
       gcal = upgrade_google_token(token)
       if gcal:
@@ -1148,7 +1169,7 @@ def gcal_connect(user, token):
         user.put()
         enqueue_tasks([{'type': 'new-user', 'queue': 'fast'}],
                       user.google_token, user.locale)
-  return gcal, False
+  return gcal, parsed_error
 
 def quota_status():
   quota_used_up =  we_gotta_wait()
@@ -1170,6 +1191,7 @@ def user_connection_status(signed_request, google_token, permissions):
                                                               facebook_token,
                                                               permissions),
                                      return_error=True)
+  # Handle Facebook connection errors
   if parsed_error:
     logging.error("WE GOT AN ERROR CONNECTING THE USER, DEBUG THIS!")
     tackle_error(parsed_error, google_token, locale)
@@ -1180,23 +1202,24 @@ def user_connection_status(signed_request, google_token, permissions):
     facebook_connected = True
     gcal, parsed_error = tackle_retrys(lambda: gcal_connect(user, google_token),
                                 return_error=True)
+    # Handle any Google connection errors
     if parsed_error != False:
-      logging.error("YOYO GOOGLE ERROR CONNECTING THE USER, DEBUG THIS! ("
+      # Log that there's a problem
+      logging.error("GOOGLE ERROR CONNECTING THE USER, DEBUG THIS! ("
                     + str(parsed_error) + ")")
-      # For normal stuff give an error
-      error = True
-      # For unusual stuff we want to log something and just pretend there's
-      # no google token. (That way the user is prompted to re-connect.)
-      if parsed_error not in ['retry', 'give-up']:
-        logging.error("GOOGLE ERROR CONNECTING THE USER, DEBUG THIS! ("
-                      + str(parsed_error) + ")")
-        error = False
-    elif gcal:
+      # If it's run out of retries show the user the error page so he refreshes
+      if parsed_error == 'retry':
+        error = True
+      # Pass the error on for handling in case it's something special
+      else:
+        tackle_error(parsed_error, google_token, locale)
+    # Now let's see if google's connected
+    if gcal:
       google_connected = True
 
   l = translator(user and user.locale)
+  status = quota_status() or (user and user.status) or ""
 
   # Finaly return something simple for the view to use
   return {'google': google_connected, 'error': error, 'l': l,
-          'facebook': facebook_connected, 
-          'status': quota_status() or user.status}
+          'facebook': facebook_connected, 'status': status}
