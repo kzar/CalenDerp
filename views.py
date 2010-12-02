@@ -24,16 +24,17 @@ class worker(webapp.RequestHandler):
   """Handles /worker requests which processes the work from task queue"""
   def post(self):
     # Grab the parameters
-    tasks = json.loads(self.request.get("tasks"))
+    store_key = self.request.get("store_key")
     token = self.request.get("token")
     locale = self.request.get("locale")
-
+    # Check if we can run now or if we have to wait
     if calenderp.we_gotta_wait():
       # Quota is used up, stall everything
-      calenderp.enqueue_tasks(tasks, token, locale)
+      queue = self.request.headers['X-AppEngine-QueueName']
+      calenderp.delay_task(store_key, token, locale, queue)
     else: 
       # Good to go, do the work!
-      calenderp.handle_tasks(tasks, token, locale)
+      calenderp.handle_task(store_key, token, locale)
     
 class refresh(webapp.RequestHandler):
   def get(self):

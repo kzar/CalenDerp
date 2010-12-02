@@ -18,6 +18,7 @@ from google.appengine.api import users, urlfetch
 from google.appengine.api.labs import taskqueue
 from google.appengine.ext import db
 from google.appengine.api.urlfetch import DownloadError
+from google.appengine.runtime.apiproxy_errors import ApplicationError
 from google.appengine.runtime import apiproxy_errors
 from django.utils import simplejson as json
 from datetime import datetime, timedelta
@@ -56,6 +57,9 @@ class Users(db.Model):
 class Flags(db.Model):
   flag_key = db.StringProperty(required=True)
   value = db.StringProperty(required=True)
+
+class TaskData(db.Model):
+  data = db.TextProperty(required=True)
 
 def parse_error(message, error, errors_list, error_index_key):
   """Takes an error and a list of errors e.g. the Google errors and returns the
@@ -114,6 +118,23 @@ def parse_google_error(err):
 
   return parse_error("Google Error", error, errors.GOOGLE_ERRORS, 'reason')
 
+def handle_special_errors(action):
+  """Returns tasks for the special error situations like removing tokens.
+  Ignores standard stuff like giving up and retrying because they should have
+  been dealt with already!"""
+  # Get rid of standard stuff
+  if action in ['give-up', 'retry']:
+    return []
+  # Do our job
+  if action == 'remove-google-token':
+    return [{'type': 'remove-google-token', 'queue': 'fast'}]
+  if action == 'remove-facebook-token':
+    return [{'type': 'remove-facebook-token', 'queue': 'fast'}]
+  # Log anything else for debugging
+  else:
+    logging.error("Unkown error action: " + str(action) + ", giving up!")
+    return []
+
 def handle_error(task, err=None, parser=None, action=None):
   """Helper function to make handling Google + Facebook errors within task 
   handlers easier. Takes an error and the task being processed and returns 
@@ -137,10 +158,21 @@ def handle_error(task, err=None, parser=None, action=None):
     return [task]
   if action == 'give-up':
     return []
-  if action == 'remove-google-token':
-    return [{'type': 'remove-google-token'}]
-  if action == 'remove-facebook-token':
-    return [{'type': 'remove-facebook-token'}]
+  else:
+    return handle_special_errors(action)
+ 
+def tackle_error(action, google_token, locale=False):
+  """Take a parsed error and the other details and queue up tasks for any
+  special occasions like tokens expiring. Otherwise don't do anything. This
+  function is useful when we're responding to a user's request and not just
+  handling tasks in a queue."""
+  # Get a list of tasks we might need to enqueue to handle special errors
+  tasks = handle_special_errors(action)
+  # For now log someting TODO delete this
+  logging.error('Tackling error, tasks: ' + str(tasks))
+  # If we have any then enqueue them
+  if tasks:
+    enqueue_tasks(tasks, google_token, locale)
 
 def tackle_retrys(f, return_error=False, retrys=config.QUERY_RETRYS):
   """Take a function that conforms to the "result, parsed_error" format and 
@@ -160,11 +192,11 @@ def tackle_retrys(f, return_error=False, retrys=config.QUERY_RETRYS):
   if parsed_error == False:
     return return_f(result, False)
   # Failure, retry
-  if parsed_error == 'retry':
+  elif parsed_error == 'retry':
     return tackle_retrys(f, retrys - 1)
-  # Failure, give up!
-  if parsed_error == 'give-up':
-    return return_f(None, True)
+  # Failure, return the error if we can
+  else:
+    return return_f(None, parsed_error)
 
 def set_flag(key, value):
   """Set a flag in the datastore's value."""
@@ -358,7 +390,8 @@ def format_birthdaytask(birthday, task_type, calendar, l):
   # Return the task
   return {'type': task_type, 'title': title, 'content': title,
           'start': start, 'end': end, 'picture': birthday['pic'],
-          'fb_id': birthday['id'], 'calendar': calendar, 'repeat': 'YEARLY'}
+          'fb_id': birthday['id'], 'calendar': calendar, 'repeat': 'YEARLY',
+          'queue': 'slow'}
 
 def format_eventtask(event, task_type, calendar, l, time_difference):
   """Helpful function to take an event and return a task ready to be
@@ -373,7 +406,7 @@ def format_eventtask(event, task_type, calendar, l, time_difference):
   # Now return the task
   return {'type': task_type, 'title': event['name'], 'calendar': calendar, 
           'content': event['content'], 'start': start, 'end': end, 
-          'fb_id': event['id'], 'location': event['location']}
+          'fb_id': event['id'], 'location': event['location'], 'queue': 'slow'}
 
 def facebook_user_query(field, datastore_key, user=None, google_token=None,
                         facebook_token=None, default=None, force_update=False,
@@ -440,29 +473,64 @@ def update_timedifference(user=None, google_token=None, facebook_token=None):
                              facebook_token, default=0, force_update=True, 
                              format_f=make_float)
 
-def enqueue_tasks(updates, token, locale, chunk_size=1):
-  """Take a list of updates and add them to the Task Queue."""
-  # Make sure we've got their locale
-  if not locale:
-    locale = tackle_retrys(lambda: check_locale(google_token=token))
-    
+def grab_eta():
+  """Checks the run_date flag, if it's in the future we need to set make sure
+  the eta uses it. If it's in the future return the parsed date for the
+  task queue, if not None."""
   # Makes sure the task queue really does wait if we're outa quota
   run_date = parse_date(get_flag('next-task-run-date'))
   if run_date and run_date > datetime.today():
-    eta = run_date
-  else:
-    eta = None
+    return run_date
 
-  # Todo catch and handle TransientError 
-  # http://code.google.com/appengine/docs/python/taskqueue/exceptions.html
-
+def enqueue_tasks(tasks, token, locale):
+  """Take a list of tasks and add them to the Task Queue."""
+  # Make sure we've got their locale
+  if not locale:
+    locale = tackle_retrys(lambda: check_locale(google_token=token))
+  # Check the eta for the tasks
+  eta = grab_eta()
   # Now add those tasks :)
-  for i in range(0, len(updates), chunk_size):
+  for task in tasks:
+    enqueue_task(token, locale, eta=eta, task=task)
+
+def enqueue_task(token, locale, eta=None, task=None, store=None, 
+                 queue="default"):
+  """Take a task and add it to the Task Queue, I've seperated this to allow
+  for recursive retries on failures."""
+  # First save the data for the task in the datastore, this is because tasks
+  # can only be so large and I was hitting the limit occasionally.
+  if not store:
+    store = TaskData(data=json.dumps(task))
+    store.put()
+  # Figure out the eta for the task
+  if not eta:
+    eta = grab_eta()
+  # Figure out the key for the store
+  if type(store).__name__ == 'str':
+    store_key = store
+  else:
+    store_key = str(store.key())
+  # Next figure out the correct queue
+  if task:
+    queue = task.get("queue", queue)
+  # Now enqueue the task, give the store's key so we can access all the
+  # data when handling it
+  try:
     taskqueue.add(url='/worker',
-                  params={'tasks': json.dumps(updates[i:i+chunk_size]),
-                          'token': token,
-                          'locale': locale},
+                  queue_name=task.get("queue", "default"),
+                  params={"store_key" : store_key,
+                          "token" : token,
+                          "locale" : locale},
                   eta=eta)
+  # Finally catch TransientError (temporary failure to enqueue task) and 
+  # handle by giving it another shot recursively. 
+  except taskqueue.TransientError:
+    enqueue_task(token, locale, eta=eta, task=task, store=store, queue=queue)
+
+def delay_task(store_key, token, locale, queue):
+  """This let's task handlers re-queue up a task for later. Used when we've
+  hit quota limits."""
+  enqueue_task(token, locale, store=store_key, queue=queue)
 
 def create_event(title, content, start, end, location=None, repeat_freq=None,
                  fb_id=None, pic=None):
@@ -554,9 +622,11 @@ def handle_newuser_event(task, gcal, token, l):
   """We have a new user, file some paperwork and return a few further tasks
   to get them all set up and ready."""
   logging.info("Setting up new user.")
-  return [dict({'type': 'insert-calendar'}, **config.BIRTHDAY_CALENDAR),
-          dict({'type': 'insert-calendar'}, **config.EVENT_CALENDAR),
-          {'type': 'update-user'}]
+  return [dict({'type': 'insert-calendar', 'queue': 'slow'},
+               **config.BIRTHDAY_CALENDAR),
+          dict({'type': 'insert-calendar', 'queue': 'slow'},
+               **config.EVENT_CALENDAR),
+          {'type': 'update-user', 'queue': 'fast'}]
 
 def event_not_in_past(entry):
   return parse_date(entry['end'], PT()) > datetime.now(UTC())
@@ -714,7 +784,8 @@ def handle_updateevents(task, gcal, token, l):
   else:
     # We can't update a calendar that doesn't exist
     if not calendar:
-      return [dict({'type': 'insert-calendar'}, **config.EVENT_CALENDAR), task]
+      return [dict({'type': 'insert-calendar', 'queue': 'fast'},
+                   **config.EVENT_CALENDAR), task]
 
     # Setup an formatting function that knows about the time difference
     # (I can't decide if this is better or worse than throwing the time
@@ -741,8 +812,8 @@ def handle_updatebirthdays(task, gcal, token, l):
   else:    
     # We can't update a calendar that doesn't exist
     if not calendar:
-      return [dict({'type': 'insert-calendar'}, **config.BIRTHDAY_CALENDAR),
-              task]
+      return [dict({'type': 'insert-calendar', 'queue': 'slow'},
+                   **config.BIRTHDAY_CALENDAR), task]
     # It's there, update and return the results
     return update_data(task, token, grab_birthdays, format_birthdaytask, 
                        'birthdays', calendar, l)
@@ -851,8 +922,9 @@ def handle_update_user(task, gcal, token, l):
     user.status = l("Last updated: %s") % time
     user.put()
     return [{'type': 'update-events', 'calendar': user.event_cal,
-             'time-difference': time_difference},
-            {'type': 'update-birthdays', 'calendar': user.bday_cal}]
+             'time-difference': time_difference, 'queue': 'slow'},
+            {'type': 'update-birthdays', 'calendar': user.bday_cal,
+             'queue': 'slow'}]
   else:
     logging.error("Can't find user so can't update them!")
     return []
@@ -863,7 +935,8 @@ def refresh_everyones_calendars():
   users = Users.all()
   for user in users:
     if user.facebook_token and user.google_token:
-      enqueue_tasks([{'type': 'update-user'}], user.google_token, user.locale)
+      enqueue_tasks([{'type': 'update-user', 'queue': 'fast'}],
+                    user.google_token, user.locale)
 
 def lang_get(s, locale, lang):
   """Helper function for translator, it's required because lambda is so limited
@@ -895,25 +968,38 @@ def translator(locale):
   language = translations.languages.get(locale, None)
   return lambda s:lang_get(s, locale, language)
 
-def handle_tasks(tasks, token, locale):
-  """This function is used by the /worker view to actually do all the work given
-  in the task queue."""
+def handle_task(store_key, token, locale):
+  """Take a task, given by the task queue worker and deal with it. This requires
+  we look up the task's details in the data store, dispatch the correct handler
+  and finaly enqueue and future tasks generated in the process."""
+  # First we need to grab the task's data from the store
+  store = TaskData.get(db.Key(store_key))
+  # Nothing in store by that ID, we have to give up :(
+  if not store:
+    logging.error("Store_key " + store_key + " not found, can't handle task.")
+    return
+  # Delete the store, we want to keep things nice and tidy
+  try:
+    task = json.loads(store.data)
+    store.delete()
+  # If we get an error just recurse round again
+  # (I've already checked the store existed, hopefully that's enough..)
+  except ApplicationError, err:
+    return handle_task(store_key, token, locale)
+
   # Future tasks is a list of new tasks to enqueue, 
   # generated while we have been dealing with the current tasks
   future_tasks = []
-
   # Connect to Google calendar
   gcal, parsed_error = check_google_token(token)
-  
   # If there's an error connecting handle the error for each task
   if parsed_error != False:
-    for task in tasks:
-      future_tasks.extend(handle_error(task, action=parsed_error))
-      enqueue_tasks(future_tasks, token, locale)
+    future_tasks.extend(handle_error(task, action=parsed_error))
+    enqueue_tasks(future_tasks, token, locale)
     return
   # No error but no gcal probably means we should retry later
   elif not gcal:
-    enqueue_tasks(tasks, token, locale)
+    enqueue_task(token, locale, task=task)
     return
 
   # Get translator function
@@ -930,26 +1016,25 @@ def handle_tasks(tasks, token, locale):
               'remove-google-token': 'handle_removegoogle',
               'update-user': 'handle_update_user'}
 
-  # Deal with the tasks
-  for task in tasks:
-    try:
-      # Dispatch the task to the appropriate handler
-      handler = globals()[handlers.get(task['type'], 'handle_unknown_task')]
-      future_tasks.extend(handler(task, gcal, token, l))
-    except Exception, err:
-      # Catch any exception, this is to stop Google retrying the task like mad
-      logging.error('Handler for ' + task.get('type','') + ' Failed!\n' +
-                    'Error: ' + str(err) + '\n' +
-                    'Task: ' + str(task) + '\n' +
-                    'Locale: ' + str(locale))
-      logging.debug('Error details:' + str(dir(err)))
-      logging.debug('Traceback: ' + str(traceback.format_stack()))
-      logging.debug('Traceback: ' + str(traceback.format_exc()))
+  # Deal with the task
+  try:
+    # Dispatch the task to the appropriate handler
+    handler = globals()[handlers.get(task['type'], 'handle_unknown_task')]
+    future_tasks.extend(handler(task, gcal, token, l))
+  except Exception, err:
+    # Catch any exception, this is to stop Google retrying the task like mad
+    logging.error('Handler for ' + task.get('type','') + ' Failed!\n' +
+                  'Error: ' + str(err) + '\n' +
+                  'Task: ' + str(task) + '\n' +
+                  'Locale: ' + str(locale))
+    logging.debug('Error details:' + str(dir(err)))
+    logging.debug('Traceback: ' + str(traceback.format_stack()))
+    logging.debug('Traceback: ' + str(traceback.format_exc()))
 
   # Enqueue any future tasks we need to deal with
   enqueue_tasks(future_tasks, token, locale)
 
-def delay_tasks(message="hoooooooooooooolllllld-up! brap brap"):
+def delay_tasks(message="hoooooooooooooolllllld-up! brap brap brap"):
   """When we receive a 'quota depleated' error we need to put everything on
   hold. For now we just stall by 1 day, maybe we will make this smarter in
   the future?"""
@@ -1085,7 +1170,8 @@ def gcal_connect(user, token):
         user.status = l('Connected to Google Calendar.')
         user.google_token = gcal.GetAuthSubToken()
         user.put()
-        enqueue_tasks([{'type': 'new-user'}], user.google_token, user.locale)
+        enqueue_tasks([{'type': 'new-user', 'queue': 'fast'}],
+                      user.google_token, user.locale)
   return gcal, False
 
 def quota_status():
@@ -1096,6 +1182,7 @@ def quota_status():
 
 def user_connection_status(signed_request, google_token, permissions):
   # Init the vars to pass back
+  error = False
   facebook_connected = False
   google_connected = False
   status = ""
@@ -1103,22 +1190,27 @@ def user_connection_status(signed_request, google_token, permissions):
   # Decode the signed_request data from Facebook
   facebook_id, facebook_token = decode_signed_request(signed_request)
   # See if we are connected properly, with the proper permissions
-  user, error = tackle_retrys(lambda: facebook_connect(facebook_id, 
-                                                       facebook_token,
-                                                       permissions),
-                              return_error=True)
-  if error:
+  user, parsed_error = tackle_retrys(lambda: facebook_connect(facebook_id, 
+                                                              facebook_token,
+                                                              permissions),
+                                     return_error=True)
+  if parsed_error:
     logging.error("WE GOT AN ERROR CONNECTING THE USER, DEBUG THIS!")
+    tackle_error(parsed_error, google_token, locale)
+    error = True
 
   # Now check results, test Google token too
   if user:
     locale = user.locale
     status = user.status
     facebook_connected = True
-    gcal, error = tackle_retrys(lambda: gcal_connect(user, google_token),
+    gcal, parsed_error = tackle_retrys(lambda: gcal_connect(user, google_token),
                                 return_error=True)
-    if error:
-      logging.error("GOOGLE ERROR CONNECTING THE USER, DEBUG THIS!")
+    if parsed_error != False:
+      logging.error("GOOGLE ERROR CONNECTING THE USER, DEBUG THIS! ("
+                    + str(parsed_error) + ")")
+      tackle_error(parsed_error, google_token, locale)
+      error = True
     elif gcal:
       google_connected = True
 
