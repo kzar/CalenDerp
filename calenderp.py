@@ -1152,7 +1152,7 @@ def facebook_connect(facebook_id, facebook_token, permissions):
       # Also make sure their locale is up to date
       update_locale(user=user)
     else:
-      # They aren't in our database, add 'um! #HERP
+      # They aren't in our database, add 'um!
       locale, parsed_error = check_locale(facebook_token=facebook_token)
       if parsed_error != False:
         logging.error("Oh sheeeiiit!11!one!")
