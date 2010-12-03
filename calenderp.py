@@ -425,6 +425,11 @@ def check_locale(user=None, google_token=None, facebook_token=None):
   return facebook_user_query('locale', 'locale', user, google_token, 
                              facebook_token)
 
+def update_locale(user=None, google_token=None, facebook_token=None):
+  """Update the user's locale and return it"""
+  return facebook_user_query('locale', 'locale', user, google_token, 
+                             facebook_token, force_update=True)
+
 def is_number_p(x):
   return type(x).__name__ in ['int', 'float', 'complex']
 
@@ -490,13 +495,17 @@ def enqueue_task(token, locale, eta=None, task=None, store=None,
     store_key = store
   else:
     store_key = str(store.key())
+  # Now check if the task contains a custom locale
+  locale = task.get('locale', locale)
   # Next figure out the correct queue
   if task:
     queue = task.get("queue", queue)
   # Now enqueue the task, give the store's key so we can access all the
   # data when handling it
+  # (We vary the URL based on type only to get more useful information from
+  #  Google's graphs and statistics.)
   try:
-    taskqueue.add(url='/worker',
+    taskqueue.add(url='/worker/' + str(task.get('type')),
                   queue_name=task.get("queue", "default"),
                   params={"store_key" : store_key,
                           "token" : token,
@@ -906,17 +915,25 @@ def handle_update_user(task, gcal, token, l):
     # "Why update timezone every time?" - because people bitch if it's ever
     # even an hour wrong! (and rightly so)
     time_difference, parsed_error = update_timedifference(user=user)
-    # Maybe we should update locale here too? The jury's out on that one.
     if parsed_error != False:
       return handle_error(task, action=parsed_error)
+    # Update the locale too, it rarely needs to change but this way it's
+    # never an issue for people.
+    locale, parsed_error = update_locale(user=user)
+    if parsed_error != False:
+      return handle_error(task, action=parsed_error)
+    if l('locale') != locale:
+      l = translator(locale)
+    # Todo - If they switch locale and immediately 
     time = (datetime.now(UTC()) + 
             make_timedelta(time_difference)).strftime('%A %d %B %Y - %X')
     user.status = l("Last updated: %s") % time
     user.put()
     return [{'type': 'update-events', 'calendar': user.event_cal,
-             'time-difference': time_difference, 'queue': 'slow'},
+             'time-difference': time_difference, 'queue': 'slow',
+             'locale': locale},
             {'type': 'update-birthdays', 'calendar': user.bday_cal,
-             'queue': 'slow'}]
+             'queue': 'slow', 'locale': locale}]
   else:
     logging.error("Can't find user so can't update them!")
     return []
@@ -1132,8 +1149,10 @@ def facebook_connect(facebook_id, facebook_token, permissions):
       if facebook_token != user.facebook_token:
         user.facebook_token = facebook_token
         user.put()
+      # Also make sure their locale is up to date
+      update_locale(user=user)
     else:
-      # They aren't in our database, add 'um!
+      # They aren't in our database, add 'um! #HERP
       locale, parsed_error = check_locale(facebook_token=facebook_token)
       if parsed_error != False:
         logging.error("Oh sheeeiiit!11!one!")

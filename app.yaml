@@ -10,7 +10,7 @@ handlers:
 - url: /images
   static_dir: images
 
-- url: /worker
+- url: /worker/.*
   script: code.py
   login: admin
 

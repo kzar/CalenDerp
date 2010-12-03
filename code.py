@@ -18,7 +18,7 @@ from google.appengine.ext.webapp.util import run_wsgi_app
 
 application = webapp.WSGIApplication([('/', views.MainPage),
                                       ('/refresh', views.refresh),
-                                      ('/worker', views.worker)],
+                                      ('/worker/.*', views.worker)],
                                      debug=True)
 def main():
   run_wsgi_app(application)
