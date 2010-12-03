@@ -14,11 +14,11 @@ Anyway give it a try: <http://apps.facebook.com/calenderp/>
 Todo
 ----
  - Add translations for more languages.
- - Write a test suite, I should have done this a lot earlier as the application is getting fairly complicated and developing it blind is insane. (I'm proud though it all works really well.)
+ - Work on the test suite, so far we have a few tests but not many.
+ - Work on optimizing things, we're starting to use a lot of our quotas.
  - Update all of the function's documentation strings, as I've refactored the code the documentation strings have started to get a bit out of sync with the actual code.
  - Figure out how to get locale for user before they have installed the Facebook application, that will let us display install.html in their native language.
- - Add datastore error parsing, we should handle datastore errors just as well as Google or Facebook ones.
- - Re-design the user interface, it doesn't do my work justice.
+ - Re-design the user interface.
 
 License
 -------
