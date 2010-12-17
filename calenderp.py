@@ -873,7 +873,6 @@ def handle_removegoogle(task, gcal, token, l):
 def handle_removefacebook(task, gcal, token, l):
   """Task handler to delete a user's facebook token. Used when it's no longer
   working."""
-  logging.error("Removing Facebook Token1!11!!")
   user = Users.all().filter("google_token = ", token).get()
   if (user):
     user.facebook_token = None
@@ -985,7 +984,7 @@ def handle_task(store_key, token, locale):
   store = TaskData.get(db.Key(store_key))
   # Nothing in store by that ID, we have to give up :(
   if not store:
-    logging.error("Store_key " + store_key + " not found, can't handle task.")
+    logging.info("Store_key " + store_key + " not found, can't handle task.")
     return
   # Delete the store, we want to keep things nice and tidy
   try:
@@ -1148,7 +1147,12 @@ def facebook_connect(facebook_id, facebook_token, permissions):
       # They are, let's make sure their Facebook token is up to date
       if facebook_token != user.facebook_token:
         user.facebook_token = facebook_token
+        user.status = "Re-connected to Facebook"
         user.put()
+        # If their Facebook token was wrong we should update their
+        # calendars right away because they are probably out of sync.
+        enqueue_tasks([{'type': 'update-user', 'queue': 'fast'}],
+                      user.google_token, user.locale)
       # Also make sure their locale is up to date
       update_locale(user=user)
     else:
