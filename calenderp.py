@@ -1059,7 +1059,13 @@ def handle_insert_calendar(task, gcal, token, l):
   logging.info("Adding calendar " + task['title'])
 
   # Check that it doesn't already exist
-  calendar = lookup_calendar(None, task, gcal, token, l)
+  try:
+    calendar = lookup_calendar(None, task, gcal, token, l)
+  except RequestError, err:
+    return handle_error(task, err, parse_google_error)
+  except (DownloadError, urlfetch.Error), err:
+    return handle_error(task, err, parse_urlfetch_error)
+  
   if calendar:
     logging.info("Didn't create calendar " + task['title'] +
                  "because it already exists.")
