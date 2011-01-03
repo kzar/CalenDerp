@@ -30,7 +30,7 @@
 "I ACCIDENTALLY Install App?"
 
 # Locales that are being used but not yet translated
-# nl_NL, da_DK, cs_CZ, pl_PL, es_LA, et_EE
+# cs_CZ, es_LA, et_EE
 
 languages = {}
 
@@ -208,3 +208,33 @@ e. (Sørg for at oppdatere kalenderen, hvis du ikke legger merke til noen endrin
 "Puts events you're attending into Google Calendar." : u"Legg til dine begivenheter til Google Kalender.",
 "It actually works." : u"Det virker faktisk.",
 "I ACCIDENTALLY Install App?" : u"Jeg UHELDIGVIS Installere App?"}
+
+# Dutch translation by Karloman Elbers
+languages['nl_NL'] = {"Not connected to Google" : u"Niet verbonden met Google",
+"You're not currently connected to Google calendar, click the button below to connect and create your Facebook calendars." : u"U bent momenteel niet verbonden met Google Calendar. Klik op de knop hieronder om te verbinden en de Facebook kalenders te maken.",
+"CONNECT TO GOOGLE" : u"VERBIND MET GOOGLE",
+"This application lets you put your friends birthdays into Google Calendar." : u"Deze applicatie laat u de verjaardagen van uw vrienden in Google Calendar zien.",
+"Features" : u"Functies",
+"Puts your birthdays into Google Calendar." : u"Laat verjaardagen zien in Google Calendar.",
+"Puts events you're attending into Google Calendar." : u"Laat aanwezige evenementen zien in Google Calendar.",
+"It actually works." : u"Het werkt echt.",
+"Connected to Google" : u"Verbonden met Google",
+"You're connected to Google calendar, things should start appearing in your calendar soon. (Make sure to refresh your calendar if you don't notice anything.)" : u"U bent verbonden met Google Calendar. Binnenkort zullen de evenementen te zien zijn in uw kalender. (Als u geen verandering ziet, vernieuw de pagina)",
+"Current status" : u"Huidige status",
+"We dun goofed!" : u"We hebben 't verneukt!",
+"Something went wrong, please refresh the page!" : u"Er ging iets fout. Vernieuw de pagina.",
+"%s's Birthday" : u"s%'s verjaardag",
+"Facebook connection broken." : u"Verbinding met Facebook verbroken",
+"Last updated: %s" : u"Laatste update: %s",
+"Connected to Google Calendar." : u"Verbonden met Google Calendar",
+"Birthdays" : u"Verjaardagen",
+"Facebook friend birthdays" : u"Verjaardagen van Facebook-vrienden",
+"Events" : u"Evenementen",
+"Facebook events" : u"Facebook-evenementen",
+"This application lets you put your friends birthdays into Google Calendar." : u"Deze applicatie laat u de verjaardagen van uw vrienden in Google Calendar zien.",
+"Features" : u"Functies",
+"Puts your birthdays into Google Calendar." : u"Laat verjaardagen zien in Google Calendar.",
+"Puts events you're attending into Google Calendar." : u"Laat aanwezige evenementen zien in Google Calendar.",
+"It actually works." : u"Het werkt echt.",
+"I ACCIDENTALLY Install App?" : u"Installeer de app?"}
+
