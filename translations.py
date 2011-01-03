@@ -29,9 +29,6 @@
 "It actually works."
 "I ACCIDENTALLY Install App?"
 
-# Locales that are being used but not yet translated
-# cs_CZ, es_LA, et_EE
-
 languages = {}
 
 # French translation by Benoit Stroobants
