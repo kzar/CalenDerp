@@ -47,6 +47,8 @@ class refresh(webapp.RequestHandler):
       calenderp.refresh_everyones_calendars()
       
 class MainPage(webapp.RequestHandler):
+  def post(self):
+    self.get()
   def get(self):
     # Check if we are connected with Facebook and Google
     signed_request = self.request.get("signed_request")

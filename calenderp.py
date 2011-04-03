@@ -239,7 +239,7 @@ def grab_birthdays(user):
     try:
       day, month = parse_birthday(friend.get('birthday', ''))
       results.append({'id': friend['id'],
-                      'name': friend['name'], 
+                      'name': friend['name'].replace("%", ""),
                       'pic': friend['picture'], 
                       'day': day,
                       'month': month})
@@ -285,12 +285,14 @@ def grab_events(user):
   for event in events:
     try: 
       if parse_date(event['end_time'], PT()) > today:
-        results.append({'name': event['name'],
-                        'content': event.get('description', ''),
+        content = event.get('description', '').replace("%", "")
+        location = event.get('location', '').replace("%", "")
+        results.append({'name': event['name'].replace("%", ""),
+                        'content': content,
                         'start': event['start_time'],
                         'end': event['end_time'],
                         'id': event['id'],
-                        'location': event.get('location', '')})
+                        'location': location})
     except TypeError:
       pass
   return results, False
@@ -1139,6 +1141,7 @@ def facebook_connect(facebook_id, facebook_token, permissions):
   if not facebook_id or not facebook_token:
     logging.info('FBID or TOKEN MISSING - New user?')
     return None, False
+
   # Next check they have all the required permissions
   graph = facebook.GraphAPI(facebook_token)
   needed_perms, parsed_error = facebook_scope_is(permissions, graph=graph)
