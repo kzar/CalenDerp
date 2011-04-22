@@ -5,7 +5,7 @@
         [calenderp.utils :only [maybe-content render-to-response]]
         [ring.middleware.reload]))
 
-(html/deftemplate layout "calenderp/templates/layout.html"
+(html/deftemplate layout "calenderp/views/layout.html"
   [{:keys [title content]}]
   [:#title] (maybe-content title)
   [:#content] (html/substitute content))
@@ -17,7 +17,7 @@
    ["test"] (fn [req] (render-to-response
                        (layout {:content "This is the test content!"})))))
 
-;(ae/def-appengine-app calenderp-app
-;  (wrap-reload #'calenderp-app-handler '(calenderp.core)))
+(ae/def-appengine-app calenderp-app
+  (wrap-reload #'calenderp-app-handler '(calenderp.core)))
 
-(ae/def-appengine-app calenderp-app #'calenderp-app-handler)
+;(ae/def-appengine-app calenderp-app #'calenderp-app-handler)
