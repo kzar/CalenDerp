@@ -1,7 +1,7 @@
 (ns calenderp.test.core
   (:use [calenderp.core])
   (:use [clojure.test])
-  (:request '[appengine-magic.testing :as ae-testing]))
+  (:require [appengine-magic.testing :as ae-testing]))
 
 (use-fixtures :each (ae-testing/local-services :all))
 
