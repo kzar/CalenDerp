@@ -5,4 +5,9 @@
 (def FACEBOOK-APP-SECRET "fixme")
 (def FACEBOOK-SCOPE ["offline_access", "friends_birthday", "user_events"])
 
+(def TEST-SIGNED-REQUEST "fixme")
+
+(def TEST-GOOGLE-TOKEN "fixme")
+
+
 (def RETRY-LIMIT 5)

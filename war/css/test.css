@@ -1,0 +1,8 @@
+input[type="text"] { width: 100%; padding: 3px; margin-bottom: 15px; }
+input[type="submit"] { display:block; margin-bottom: 10px; }
+#output { width: 100%; height: 200px; }
+
+
+.valid { background: #9ACD32; }
+.wrong { background: #FF6347; }
+

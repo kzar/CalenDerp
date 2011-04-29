@@ -19,3 +19,8 @@
 (defmacro maybe-content
   ([expr] `(if-let [x# ~expr] (html/content x#) identity))
   ([expr & exprs] `(maybe-content (or ~expr ~@exprs))))
+
+(defmacro ignore-exceptions [& args]
+  `(try
+     ~@args
+     (catch Exception e# nil)))
