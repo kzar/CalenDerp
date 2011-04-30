@@ -10,11 +10,11 @@
         [ring.util.response :only [redirect]]
         [ring.middleware.reload]))
 
-(html/defsnippet css-include "calenderp/views/layout.html" [[:head] [:link (html/nth-of-type 1)]]
+(html/defsnippet css-include "calenderp/views/layout.html" [:head [:link (html/attr= :rel "stylesheet")]]
   [stylesheet]
   [:link] (html/set-attr :href stylesheet))
 
-(html/defsnippet js-include "calenderp/views/layout.html" [[:head] [:script (html/nth-of-type 1)]]
+(html/defsnippet js-include "calenderp/views/layout.html" [:head [:script (html/nth-of-type 1)]]
   [js]
   [:script] (html/set-attr :src js))
 
@@ -57,6 +57,11 @@
    (let [birthdays (calenderp.facebook/friends {:oauth_token facebook-token})]
      (json-str birthdays))))
 
+(defn facebook-events-json [request facebook-token]
+  (render-to-response
+   (let [events (calenderp.facebook/events {:oauth_token facebook-token})]
+     (json-str events))))
+
 (def calenderp-app-handler
   (app
    wrap-params
@@ -65,7 +70,8 @@
               :dev-appserver testing-page
               :production home-page)
    ["ajax" "decode-signed-request" signed-request] #(signed-request-json % signed-request)
-   ["ajax" "facebook-birthdays" facebook-token] #(facebook-birthdays-json % facebook-token)))
+   ["ajax" "facebook-birthdays" facebook-token] #(facebook-birthdays-json % facebook-token)
+   ["ajax" "facebook-events" facebook-token] #(facebook-events-json % facebook-token)))
 
 (ae/def-appengine-app calenderp-app
   (wrap-reload #'calenderp-app-handler '(calenderp.core)))

@@ -32,5 +32,20 @@ $(document).ready(function() {
         });
     });
 
+    $("#scrape-events").click(function(event) {
+        event.preventDefault();
+        $.getJSON('/ajax/facebook-events/' + $("#facebook-token").val(), null, function(result) {
+            if (result) {
+                $("#facebook-token").addClass('valid').removeClass('wrong');
+
+                $("#output").val("Facebook events:\n\n" + $.toJSON(result));
+            }
+            else {
+                $("#facebook-token").addClass('wrong').removeClass('valid');
+                $("#output").val("Dodgy facebook-token or facebook query failed for some other reason >:o");
+            }
+        });
+    });
+
     checkSignedRequest();
 });
