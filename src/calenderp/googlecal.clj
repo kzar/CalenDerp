@@ -1,6 +1,7 @@
 (ns calenderp.googlecal
   (:use [calenderp.config.config]
-        [clj-time.core :only [date-time]])
+        [clj-time.core :only [date-time]]
+        [clojure.contrib.seq-utils :only [indexed]])
   (:import [com.google.gdata.client.calendar CalendarService]
            [com.google.gdata.client.authn.oauth OAuthParameters]
            [com.google.gdata.data.calendar CalendarEntry CalendarEventEntry CalendarEventFeed CalendarFeed ColorProperty HiddenProperty TimeZoneProperty]
@@ -52,29 +53,26 @@
 (defn process-batch [cs batch]
   (let [url (:url (first batch))
         batch-request (CalendarEventFeed.)
-        feed (.getFeed cs url CalendarEventFeed) ; FIXME - this line's prob!
-        batch-url (when (> (count batch) 1)
+        feed (.getFeed cs url CalendarEventFeed)
+        batch-link (when (> (count batch) 1)
                     (.getLink feed ILink$Rel/FEED_BATCH ILink$Type/ATOM))]
-    (if batch-url
+    (if batch-link
       (do
-        (doseq [action batch, i (range)]
+        (doseq [[i action] (indexed batch)]
           (BatchUtils/setBatchId (:action action) (str i))
           (BatchUtils/setBatchOperationType (:action action)
                                             (batch-types (:type action)))
-          (.add (.getEntries batch-request) action))
-          (.batch cs batch-url batch-request))
+          (.add (.getEntries batch-request) (:action action)))
+        (.batch cs (URL. (.getHref batch-link)) batch-request))
       (doall (map (partial process-action cs) batch)))))
 
 (defn process-batches [cs actions]
   (let [batches (partition-by :url actions)]
     (apply concat (doall (map (partial process-batch cs) batches)))))
 
-(def bob (process-batches (calendar-service TEST-GOOGLE-TOKEN)
-                          [(create-calendar "test" "description")]))
-
-
 (let [cs (calendar-service TEST-GOOGLE-TOKEN)
-      calendar (process-batches cs [(create-calendar "test" "description")])]
+      result (process-batches cs [(create-calendar "test" "description")])
+      calendar (URL. (.getUri (.getContent (first result))))]
   (process-batches cs (repeat 5 (create-event calendar "Test event" "yo"
                                               (date-time 2011 4 8)
                                               (date-time 2011 4 9)))))
