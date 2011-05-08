@@ -6,10 +6,7 @@
         [calenderp.utils :only [ignore-exceptions]]
         [clj-facebook-graph.auth :only [facebook-auth-url with-facebook-auth]]
         [clj-time.format :only [parse formatter]]
-        [clj-facebook-graph.auth :only [decode-signed-request]])
-  (:import [org.apache.commons.codec.binary Base64]
-           [javax.crypto Mac]
-           [javax.crypto.spec SecretKeySpec]))
+        [clj-facebook-graph.auth :only [decode-signed-request]]))
 
 (def facebook-birthday-formatter (formatter "MM/dd/yyyy"))
 ; Decode event date - (parse "2011-07-17T01:00:00+0000")

@@ -4,7 +4,9 @@
                  [net.cgrand/moustache "1.0.0"]
                  [enlive "1.0.0-SNAPSHOT"]
                  [clj-facebook-graph "0.2.0"]
-                 [clj-time "0.3.0"]]
+                 [clj-time "0.3.0"]
+                 [com.google.gdata/gdata-calendar-2.0 "1.41.5"]]
   :dev-dependencies [[appengine-magic "0.4.1"]
                      [swank-clojure "1.3.0-SNAPSHOT"]
-                     [ring/ring-devel "0.3.7"]])
+                     [ring/ring-devel "0.3.7"]]
+  :repositories {"mandubian-mvn" "http://mandubian-mvn.googlecode.com/svn/trunk/mandubian-mvn/repository"})
