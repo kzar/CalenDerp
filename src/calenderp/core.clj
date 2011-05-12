@@ -6,6 +6,7 @@
         [calenderp.config.config]
         [calenderp.facebook :only [fb-auth-status]]
         [clj-facebook-graph.auth :only [decode-signed-request]]
+        [calenderp.googlecal :only [demo-cal-create]]
         [clojure.contrib.json :only [json-str]]
         [ring.middleware.params :only [wrap-params]]
         [ring.util.response :only [redirect]]
@@ -63,6 +64,10 @@
    (let [events (calenderp.facebook/events {:oauth_token facebook-token})]
      (json-str events))))
 
+(defn google-cal-test-json [request google-token]
+  (render-to-response
+    (calenderp.googlecal/demo-cal-create google-token)))
+
 (def calenderp-app-handler
   (app
    wrap-params
@@ -72,7 +77,8 @@
               :production home-page)
    ["ajax" "decode-signed-request" signed-request] #(signed-request-json % signed-request)
    ["ajax" "facebook-birthdays" facebook-token] #(facebook-birthdays-json % facebook-token)
-   ["ajax" "facebook-events" facebook-token] #(facebook-events-json % facebook-token)))
+   ["ajax" "facebook-events" facebook-token] #(facebook-events-json % facebook-token)
+   ["ajax" "google-cal-test" google-token] #(google-cal-test-json % google-token)))
 
 (ae/def-appengine-app calenderp-app
   (wrap-reload #'calenderp-app-handler '(calenderp.core)))

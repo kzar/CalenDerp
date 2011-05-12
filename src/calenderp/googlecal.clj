@@ -1,6 +1,6 @@
 (ns calenderp.googlecal
   (:use [calenderp.config.config]
-        [clj-time.core :only [date-time]]
+        [clj-time.core :only [date-time now plus days]]
         [clojure.contrib.seq-utils :only [indexed]])
   (:import [com.google.gdata.client.calendar CalendarService]
            [com.google.gdata.client.authn.oauth OAuthParameters]
@@ -50,29 +50,40 @@
         :query (.query cs (:url action) (:action action))
         :delete (.delete cs (:url action) (:action action))))
 
+(defn action-status [action]
+  ; FIXME - what's wrong with this case statement?
+  (case (type action)
+        CalendarEntry {:success true} ; FIXME get proper info
+        CalenderEventEntry (let [status (BatchUtils/getBatchStatus action)]
+                             {:batch-id (BatchUtils/getBatchId action)
+                              :success (.getReason status)
+                              :message (.getContent status)})))
+
 (defn process-batch [cs batch]
   (let [url (:url (first batch))
         batch-request (CalendarEventFeed.)
         feed (.getFeed cs url CalendarEventFeed)
         batch-link (when (> (count batch) 1)
                     (.getLink feed ILink$Rel/FEED_BATCH ILink$Type/ATOM))]
-    (if batch-link
-      (do
-        (doseq [[i action] (indexed batch)]
-          (BatchUtils/setBatchId (:action action) (str i))
-          (BatchUtils/setBatchOperationType (:action action)
-                                            (batch-types (:type action)))
-          (.add (.getEntries batch-request) (:action action)))
-        (.batch cs (URL. (.getHref batch-link)) batch-request))
-      (doall (map (partial process-action cs) batch)))))
+    (map action-status
+         (if batch-link
+           (do
+             (doseq [[i action] (indexed batch)]
+               (BatchUtils/setBatchId (:action action) (str i))
+               (BatchUtils/setBatchOperationType (:action action)
+                                                 (batch-types (:type action)))
+               (.add (.getEntries batch-request) (:action action)))
+             (.getEntries (.batch cs (URL. (.getHref batch-link)) batch-request)))
+           (doall (map (partial process-action cs) batch))))))
 
 (defn process-batches [cs actions]
   (let [batches (partition-by :url actions)]
-    (apply concat (doall (map (partial process-batch cs) batches)))))
+    (doall (map (partial process-batch cs) batches))))
 
-(let [cs (calendar-service TEST-GOOGLE-TOKEN)
-      result (process-batches cs [(create-calendar "test" "description")])
-      calendar (URL. (.getUri (.getContent (first result))))]
-  (process-batches cs (repeat 5 (create-event calendar "Test event" "yo"
-                                              (date-time 2011 4 8)
-                                              (date-time 2011 4 9)))))
+(defn demo-cal-create [token]
+  (let [cs (calendar-service token)
+        result (process-batches cs [(create-calendar "test" "description")])
+        calendar (URL. (.getUri (.getContent (first (first result)))))]
+    (process-batches cs (repeat 5 (create-event calendar "Test event" "yo"
+                                                (now)
+                                                (plus (now) (days 1)))))))

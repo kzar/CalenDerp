@@ -47,5 +47,20 @@ $(document).ready(function() {
         });
     });
 
+    $("#create-test-calendar").click(function(event) {
+        event.preventDefault();
+        $.getJSON('/ajax/google-cal-test/' + encodeURIComponent($("#google-token").val()), null, function(result) {
+            if (result) {
+                $("#google-token").addClass('valid').removeClass('wrong');
+
+                $("#output").val("Google response:\n\n" + $.toJSON(result));
+            }
+            else {
+                $("#google-token").addClass('wrong').removeClass('valid');
+                $("#output").val("Dodgy google-token or other Google calendar issue  >:o");
+            }
+        });
+    });
+
     checkSignedRequest();
 });
