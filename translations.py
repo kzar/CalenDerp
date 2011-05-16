@@ -292,3 +292,36 @@ languages['pt_PT'] = {"Not connected to Google" : u"Não conectado ao Google",
 "Puts events you're attending into Google Calendar." : u"Coloca eventos em que vai participar no Calendário do Google.",
 "It actually works." : u"Realmente, funciona.",
 "I ACCIDENTALLY Install App?" : u"Instalo a aplicação por ACIDENTE/ENGANO?"}
+
+
+# Hungarian translation by Landor99
+languages['hu_HU'] = {"Not connected to Google" : u"Nincs csatlakozva a Googlehoz",
+"You're not currently connected to Google calendar, click the button below to connect and create your Facebook calendars." : u"Te pillanatnyilag nem csatlakozol a Google naptárhoz, kattints az alábbi gombra a kapcsolódáshoz, hogy létrehozd ott a Facebook naptárat.",
+"CONNECT TO GOOGLE" : u"CSATLAKOZÁS A GOOGLEHOZ",
+"This application lets you put your friends birthdays into Google Calendar." : u"Ez az alkalmazás lehetővé teszi, hogy barátaid születésnapját felvedd a Google naptáradba.",
+"Features" : u"Tulajdonságok",
+"Puts your birthdays into Google Calendar." : u"Felviszi a születésnapokat a Google naptárba.",
+"Puts events you're attending into Google Calendar." : u"Felviszi az eseményeket amin részt veszel a Google naptárba.",
+"It actually works." : u"Ez tényleg működik.",
+"Connected to Google" : u"Csatlakozva a Googlehoz",
+"You're connected to Google calendar, things should start appearing in your calendar soon. (Make sure to refresh your calendar if you don't notice anything.)" : u"Kapcsolódva a Google naptárhoz, az eseményeknek hamarosan meg kell jelenni a naptáradban. (Ne felejtsd el frissíteni a naptáradat, ha nem történik semmi.)",
+"Current status" : u"A jelenlegi állapot",
+"We dun goofed!" : u"Valami elszaródott!",
+"Something went wrong, please refresh the page!" : u"Valami nem sikerült, kérlek, frissítsd az oldalt!",
+"%s's Birthday" : u"%s születésnapja",
+"Facebook connection broken." : u"Facebook kapcsolat megszakadt.",
+"Last updated: %s" : u"Utolsó frissítés:%s",
+"Connected to Google Calendar." : u"Kapcsolódva a Google naptárhoz.",
+"Birthdays" : u"Születésnap",
+"Facebook friend birthdays" : u"Facebookos ismerősöm születésnapja",
+"Events" : u"Események",
+"Facebook events" : u"Facebook események",
+"This application lets you put your friends birthdays into Google Calendar." : u"Ez az alkalmazás lehetővé teszi a barátok születésnapjának a felvételét a Google naptárba.",
+"Features" : u"Tulajdonságok",
+"Puts your birthdays into Google Calendar." : u"Felviszi a születésnapokat a Google naptárba.",
+"Puts events you're attending into Google Calendar." : u"Felviszi az eseményeket amin részt veszel a Google naptárba.",
+"It actually works." : u"Ez tényleg működik.",
+"I ACCIDENTALLY Install App?" : u"Véletlenül telepítetted az alkalmazást?"}
+
+
+
