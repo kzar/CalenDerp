@@ -1,6 +1,5 @@
 (ns calenderp.utils
-  (:require [appengine-magic.core :as ae]
-            [net.cgrand.enlive-html :as html])
+  (:require [net.cgrand.enlive-html :as html])
   (:use [ring.util.response :only [response file-response]]))
 
 (defn render [t]
