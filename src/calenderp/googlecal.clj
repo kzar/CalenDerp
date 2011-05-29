@@ -2,6 +2,7 @@
   (:use [calenderp.config.config]
         [clj-time.core :only [date-time now plus days]]
         [clojure.contrib.seq-utils :only [indexed]])
+  (:require [clojure.contrib.string :as str])
   (:import [com.google.gdata.client.calendar CalendarService]
            [com.google.gdata.client.authn.oauth OAuthParameters]
            [com.google.gdata.data.calendar CalendarEntry CalendarEventEntry CalendarEventFeed CalendarFeed ColorProperty HiddenProperty TimeZoneProperty]
@@ -32,6 +33,9 @@
    :type :insert
    :url *calendar-url*})
 
+(defn calendar-url [calendar]
+  (URL. (.getUri (.getContent calendar))))
+
 (defn create-event [calendar name description start end]
   (let [start-end (doto (When.)
                     (.setStartTime (DateTime. (.getMillis start)))
@@ -50,12 +54,18 @@
         :query (.query cs (:url action) (:action action))
         :delete (.delete cs (:url action) (:action action))))
 
-(defn action-status [action]
-  ; FIXME - what's wrong with this case statement?
-  (case (type action)
-        CalendarEntry {:success true} ; FIXME get proper info
-        CalenderEventEntry (let [status (BatchUtils/getBatchStatus action)]
-                             {:batch-id (BatchUtils/getBatchId action)
+(defn class->symbol
+  ([class] (class->symbol class nil))
+  ([class local?]
+     (let [name (.getName class)]
+       (symbol
+        (if local? (last (str/split #"\." name)) name)))))
+
+(defn action-status [result]
+  (case (class->symbol (class result) true)
+        CalendarEntry {:success true :calendar result}
+        CalendarEventEntry (let [status (BatchUtils/getBatchStatus result)]
+                             {:batch-id (BatchUtils/getBatchId result)
                               :success (.getReason status)
                               :message (.getContent status)})))
 
@@ -77,13 +87,19 @@
            (doall (map (partial process-action cs) batch))))))
 
 (defn process-batches [cs actions]
-  (let [batches (partition-by :url actions)]
-    (doall (map (partial process-batch cs) batches))))
+   (let [batches (partition-by :url actions)]
+     (apply concat
+            (doall (map (partial process-batch cs) batches)))))
 
 (defn demo-cal-create [token]
   (let [cs (calendar-service token)
         result (process-batches cs [(create-calendar "test" "description")])
-        calendar (URL. (.getUri (.getContent (first (first result)))))]
+        calendar (calendar-url (:calendar (first result)))]
     (process-batches cs (repeat 5 (create-event calendar "Test event" "yo"
                                                 (now)
                                                 (plus (now) (days 1)))))))
+; Think..
+;  - Add event creation tasks before calendar exists?
+;  - Return results in same order as tasks given?
+;  - How is queue handled without appengine?
+;  - Seperate queue code from Google calendar code?
