@@ -67,7 +67,8 @@
         CalendarEventEntry (let [status (BatchUtils/getBatchStatus result)]
                              {:batch-id (BatchUtils/getBatchId result)
                               :success (.getReason status)
-                              :message (.getContent status)})))
+                              :message (.getContent status)
+                              :title (.getText (.getTitle result))})))
 
 (defn process-batch [cs batch]
   (let [url (:url (first batch))
@@ -95,11 +96,13 @@
   (let [cs (calendar-service token)
         result (process-batches cs [(create-calendar "test" "description")])
         calendar (calendar-url (:calendar (first result)))]
-    (process-batches cs (repeat 5 (create-event calendar "Test event" "yo"
-                                                (now)
-                                                (plus (now) (days 1)))))))
+    (process-batches cs
+                     (for [i (range 5)]
+                       (create-event calendar (str "Test event " i) "yo"
+                                     (now)
+                                     (plus (now) (days 1)))))))
 ; Think..
 ;  - Add event creation tasks before calendar exists?
 ;  - Return results in same order as tasks given?
 ;  - How is queue handled without appengine?
-;  - Seperate queue code from Google calendar code?
+
